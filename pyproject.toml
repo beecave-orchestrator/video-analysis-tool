@@ -1,0 +1,85 @@
+[project]
+name = "video-nsfw-tagger"
+version = "0.1.0"
+description = "Local, offline, privacy-first NSFW video analysis CLI"
+readme = "README.md"
+requires-python = "~=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "typer[all]>=0.27.0",
+    "rich>=15.0.0",
+    "torch>=2.2.0,<2.3",
+    "transformers>=4.40,<5",
+    "numpy<2",
+    "pillow",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.11",
+    "typing-extensions>=4.15.0",
+    "docstr-coverage>=2.3.2",
+    "interrogate>=1.7.0",
+]
+
+[project.scripts]
+vnt = "video_nsfw_tagger.cli:app"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.scripts]
+lint = "ruff check ."
+format = "ruff format ."
+format-check = "ruff format --check ."
+fix = "ruff check --fix ."
+test = "pytest -q"
+test-cov = "pytest --cov=. --cov-report=term-missing:skip-covered --cov-report=xml"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+preview = true
+
+[tool.ruff.lint]
+select = [
+    "F",
+    "E",
+    "W",
+    "N",
+    "I",
+    "D",
+    "DOC",
+    "ANN",
+    "TID",
+    "UP",
+    "FA",
+]
+extend-select = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+pythonpath = ["src"]
+markers = [
+    "integration: mark tests that hit real external integrations or slower paths",
+    "slow: mark tests that are slow or require model downloads",
+]

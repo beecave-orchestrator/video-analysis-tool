@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# video-nsfw-tagger artifacts
+video_nsfw_index.db
+video_nsfw_index.db-*
+*.nsfw.json
+tests/fixtures/*.mp4
+tests/fixtures/*.mkv
+tests/fixtures/*.mov
