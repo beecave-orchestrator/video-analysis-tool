@@ -151,6 +151,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv/
 env/
 venv/
 ENV/
@@ -224,3 +225,4 @@ video_nsfw_index.db-*
 tests/fixtures/*.mp4
 tests/fixtures/*.mkv
 tests/fixtures/*.mov
+
