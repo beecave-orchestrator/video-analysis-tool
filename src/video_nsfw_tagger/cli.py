@@ -1,5 +1,6 @@
 """Typer CLI for the video-nsfw-tagger."""
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,17 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from video_nsfw_tagger import aggregate, classify, config, db, device, extract, sidecar
+from video_nsfw_tagger import (
+    aggregate,
+    classify,
+    config,
+    db,
+    device,
+    extract,
+    lexicon as lexicon_mod,
+    sidecar,
+)
+from video_nsfw_tagger import ollama as ollama_mod
 
 app = typer.Typer(help="Video NSFW Tagger", no_args_is_help=True)
 console = Console()
@@ -77,12 +88,23 @@ def scan(
     ] = config.DEFAULT_BATCH_SIZE,
     vlm: Annotated[
         bool,
-        typer.Option("--vlm", help="Enable VLM captioning (Phase B no-op)"),
+        typer.Option("--vlm", help="Enable VLM captioning via Ollama"),
     ] = False,
     vlm_model: Annotated[
         str,
-        typer.Option("--vlm-model", help="VLM model ID"),
-    ] = config.DEFAULT_VLM_MODEL,
+        typer.Option("--vlm-model", help="Ollama VLM model name"),
+    ] = config.DEFAULT_OLLAMA_MODEL,
+    ollama_host: Annotated[
+        str,
+        typer.Option("--ollama-host", help="Ollama server URL"),
+    ] = config.DEFAULT_OLLAMA_HOST,
+    unload_vit_before_vlm: Annotated[
+        bool,
+        typer.Option(
+            "--unload-vit-before-vlm",
+            help="Unload the ViT before VLM calls (lower peak VRAM, slower)",
+        ),
+    ] = False,
     vlm_top_k: Annotated[
         Optional[int],
         typer.Option("--vlm-top-k", help="Max flagged frames to caption", min=1),
@@ -93,11 +115,20 @@ def scan(
     ] = config.DEFAULT_LEXICON,
 ) -> None:
     """Scan video(s) and write sidecar + index entries."""
+    captioner = None
+    lexicon_data = None
     if vlm:
-        console.print(
-            "[yellow]--vlm is a no-op in Phase A builds; "
-            "VLM will be enabled in Phase B.[/yellow]"
-        )
+        captioner = ollama_mod.OllamaCaptioner(model=vlm_model, host=ollama_host)
+        try:
+            captioner.check_available()
+        except RuntimeError as exc:
+            console.print(f"[red]VLM unavailable:[/red] {exc}")
+            raise typer.Exit(1)
+        try:
+            lexicon_data = lexicon_mod.load_lexicon(lexicon)
+        except Exception as exc:
+            console.print(f"[red]Failed to load lexicon {lexicon}:[/red] {exc}")
+            raise typer.Exit(1)
 
     videos = _discover_videos(target, recursive)
     if not videos:
@@ -105,15 +136,19 @@ def scan(
         raise typer.Exit(0)
 
     resolved = device.resolve_device(device_name)
-    try:
-        pipe = classify.load_pipeline(
-            resolved,
-            model_name=config.DEFAULT_VIT_MODEL,
-            batch_size=batch_size,
-        )
-    except Exception as exc:
-        console.print(f"[red]Failed to load ViT model:[/red] {exc}")
-        raise typer.Exit(1)
+
+    def load_vit():
+        try:
+            return classify.load_pipeline(
+                resolved,
+                model_name=config.DEFAULT_VIT_MODEL,
+                batch_size=batch_size,
+            )
+        except Exception as exc:
+            console.print(f"[red]Failed to load ViT model:[/red] {exc}")
+            raise typer.Exit(1)
+
+    pipe = load_vit()
 
     conn = db.init_db(db_path)
     try:
@@ -125,6 +160,8 @@ def scan(
             task = progress.add_task("Scanning videos...", total=len(videos))
             for video in videos:
                 progress.update(task, description=f"Scanning {video.name}")
+                if pipe is None:
+                    pipe = load_vit()
                 with extract.extracted_frames(
                     video, fps=fps, max_duration=max_duration
                 ) as frames:
@@ -140,9 +177,73 @@ def scan(
                         pipe, image_paths, batch_size=batch_size
                     )
                     result = aggregate.aggregate(scores, threshold=threshold, fps=fps)
+
+                    # VLM stage (Phase B): caption flagged frames while they
+                    # still exist inside the extracted_frames context.
+                    vlm_block = None
+                    act_tags: List[str] = []
+                    if captioner is not None and result.flagged_frames:
+                        selected = ollama_mod.select_flagged_frames(
+                            frames, result.flagged_frames, top_k=vlm_top_k
+                        )
+                        if unload_vit_before_vlm:
+                            del pipe
+                            pipe = None
+                            if resolved == "cuda":
+                                import torch
+
+                                torch.cuda.empty_cache()
+                        try:
+                            captions = []
+                            for i, (idx, ts, path) in enumerate(selected, 1):
+                                progress.update(
+                                    task,
+                                    description=(
+                                        f"Captioning {video.name} "
+                                        f"frame {i}/{len(selected)}"
+                                    ),
+                                )
+                                captions.append(
+                                    {
+                                        "frame": idx,
+                                        "timestamp_s": ts,
+                                        "caption": captioner.caption_frame(path),
+                                    }
+                                )
+                            act_tags = sorted(
+                                {
+                                    tag
+                                    for c in captions
+                                    for tag in lexicon_mod.find_tags(
+                                        c["caption"], lexicon_data
+                                    )
+                                }
+                            )
+                            vlm_block = {
+                                "backend": "ollama",
+                                "model": vlm_model,
+                                "host": ollama_host,
+                                "captions": captions,
+                                "act_tags": act_tags,
+                            }
+                        except Exception as exc:
+                            # Decision #16: degrade, don't abort the batch.
+                            console.print(
+                                f"[yellow]VLM captioning failed for "
+                                f"{video}: {exc}[/yellow]"
+                            )
+                        progress.update(task, description=f"Scanning {video.name}")
+
                     duration = extract.get_duration(video)
                     side = sidecar.sidecar_path(video)
                     created = datetime.now(timezone.utc).astimezone().isoformat()
+
+                    # Decision #18: a non-VLM scan preserves existing VLM data.
+                    if captioner is None and side.exists():
+                        try:
+                            vlm_block = sidecar.read_sidecar(side).get("vlm")
+                        except Exception:
+                            vlm_block = None
 
                     payload = {
                         "schema_version": 1,
@@ -157,27 +258,27 @@ def scan(
                         "max_score": result.max_score,
                         "verdict": result.verdict,
                         "flagged_frames": result.flagged_frames,
-                        "vlm": None,
+                        "vlm": vlm_block,
                         "created_at": created,
                     }
                     sidecar.write_sidecar(side, payload)
-                    db.upsert_video(
-                        conn,
-                        {
-                            "path": str(video),
-                            "duration_s": duration,
-                            "frames_total": len(scores),
-                            "nsfw_percent": round(result.nsfw_percent, 2),
-                            "max_score": result.max_score,
-                            "verdict": result.verdict,
-                            "threshold": threshold,
-                            "model": config.DEFAULT_VIT_MODEL,
-                            "vlm_model": None,
-                            "act_tags": "[]",
-                            "sidecar_path": str(side),
-                            "scanned_at": created,
-                        },
-                    )
+
+                    record = {
+                        "path": str(video),
+                        "duration_s": duration,
+                        "frames_total": len(scores),
+                        "nsfw_percent": round(result.nsfw_percent, 2),
+                        "max_score": result.max_score,
+                        "verdict": result.verdict,
+                        "threshold": threshold,
+                        "model": config.DEFAULT_VIT_MODEL,
+                        "sidecar_path": str(side),
+                        "scanned_at": created,
+                    }
+                    if vlm_block is not None:
+                        record["vlm_model"] = vlm_block["model"]
+                        record["act_tags"] = json.dumps(vlm_block["act_tags"])
+                    db.upsert_video(conn, record)
                     console.print(
                         f"[green]Scanned[/green] {video} → {result.verdict} "
                         f"(max={result.max_score}, "
@@ -186,6 +287,8 @@ def scan(
                 progress.advance(task)
     finally:
         conn.close()
+        if captioner is not None:
+            captioner.unload()
 
 
 @app.command()
