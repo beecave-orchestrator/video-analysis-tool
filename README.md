@@ -6,20 +6,30 @@ A local, offline, privacy-first CLI for NSFW video analysis.
 [Falconsai NSFW ViT](https://huggingface.co/Falconsai/nsfw_image_detection),
 and writes a JSON sidecar plus a per-directory SQLite index.
 
-Phase A (this version) ships the ViT pipeline. VLM captioning and offline act
-lexicon support are scaffolded for Phase B on the AMD RX 6600 / ROCm server.
+Phase A ships the ViT pipeline. Phase B (VLM captioning via Ollama) is
+validated on the AMD RX 6600 / ROCm server — see
+[docs/rocm-validation.md](docs/rocm-validation.md) for environment details.
 
-## Quick start
+## Quick start (ROCm target)
 
 ```bash
-pdm install
-pdm run vnt config-show
+# Create venv with ROCm torch
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+pip install -e ".[dev]"
+
+# gfx1032 (RX 6600) workaround — required before every run
+export HSA_OVERRIDE_GFX_VERSION=10.3.0
+
+vnt config-show
 
 # Synthetic end-to-end smoke test
 ffmpeg -f lavfi -i testsrc=duration=5:size=320x240:rate=30 -pix_fmt yuv420p -y /tmp/vnt-sample.mp4
-pdm run vnt scan /tmp/vnt-sample.mp4
+vnt scan /tmp/vnt-sample.mp4
 cat /tmp/vnt-sample.nsfw.json
-pdm run vnt report
+vnt report
 ```
 
 ## Usage
@@ -37,9 +47,10 @@ Use `--vlm` only on the ROCm target; it is a no-op in Phase A builds.
 ## Development
 
 ```bash
-pdm run test       # unit tests (no model downloads)
-pdm run lint
-pdm run format
+source .venv/bin/activate
+pytest -q          # unit tests (no model downloads)
+ruff check .       # lint
+ruff format .      # format
 ```
 
 ## Privacy note
