@@ -5,7 +5,7 @@ Build a local, offline, privacy-first CLI tool that samples video frames with ff
 - **Source plan:** `2026-07-09-video-nsfw-analysis-pipeline.md` (workspace root)
 - **Feasibility:** verified in prior session (see "Feasibility findings" below)
 - **Development constraint:** Phase A was developed on an Intel MacBook (CPU only). Phase B environment setup and validation completed on the AMD RX 6600 / ROCm server. The project is now **ROCm-only** — the Mac dev constraint no longer applies.
-- **Status:** Phase A complete, Phase B environment validated, Phase B code implementation pending
+- **Status:** Phase A complete, Phase B environment validated, Phase B plan revised (Ollama backend split into `ollama.py`), code implementation pending
 
 ---
 
@@ -28,11 +28,13 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 
 **Pending (next session):**
 
-- [ ] `vlm.py` — replace `NotImplementedError` placeholder with real Ollama HTTP API client
-- [ ] Wire `--vlm` flag into CLI scan flow (currently a no-op notice)
-- [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block and DB columns
-- [ ] Phase B unit/integration tests (VLM mocked/skipped when Ollama unavailable)
+- [x] `ollama.py` — new module: Ollama HTTP API captioner (`OllamaCaptioner` class + module-level `caption_frames()`); default `qwen3-vl:4b`; `check_available()` fail-fast; `--vlm-model` accepts Ollama model names; NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score). `vlm.py` stays as a placeholder for a future transformers backend. (done 2026-08-10)
+- [x] `config.py` — added `DEFAULT_OLLAMA_MODEL` + `DEFAULT_OLLAMA_HOST`; removed config-level `DEFAULT_VLM_MODEL` (CLI `--vlm-model` now defaults to `DEFAULT_OLLAMA_MODEL`). Also fixed `DEFAULT_LEXICON` path resolution (`parents[3]` → `parents[2]`). (done 2026-08-10)
+- [x] Wire `--vlm` flag into CLI scan flow; fail-fast if Ollama unreachable or model not pulled; `--unload-vit-before-vlm` flag (default off). VLM captioning runs inside the `extract.extracted_frames(...)` context. Verified end-to-end on RX 6600 (forced flagging via `--threshold 0 --vlm-top-k 1`). (done 2026-08-10)
+- [x] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block (with `backend`/`host`); DB gets `vlm_model` + `act_tags` only; non-VLM re-scan preserves existing VLM data (decision #18, verified). (done 2026-08-10)
+- [x] Phase B unit/integration tests (`tests/test_ollama.py` with mocked `ollama.Client`; integration test skips when Ollama unavailable). Frame-selection extracted as pure `select_flagged_frames()` helper. 24/24 tests pass. (done 2026-08-10)
 - [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
+- [ ] Rich progress for VLM stage: per-frame caption progress ("captioning frame 3/7") — at ~11s/caption a bare per-video spinner is too opaque
 
 ### Scope changes from original plan
 
@@ -42,6 +44,7 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | 9 | Packaging: PDM | setuptools (kept `[tool.pdm]` for scripts only) | Deviation from Phase A; build backend is `setuptools.build_meta` with src layout. PDM scripts retained via `[tool.pdm.scripts]`. |
 | — | Mac dev constraint (torch<2.3, numpy<2) | ROCm-only target | Project moved to ROCm server. torch pin loosened to `>=2.5` for ROCm wheels (2.5–2.10). Mac CPU dev path no longer supported. |
 | — | VLM loaded directly via transformers | VLM called via Ollama HTTP API (`localhost:11434`) | Ollama container (`ollama-rocm`) already running with ROCm. Shared model store via bind-mount of `~/.ollama`. Avoids VRAM management complexity. Models: `qwen3-vl:4b` (default), 2B abliterated (fallback). |
+| — | VLM backend in `vlm.py` | **Separate `ollama.py` module**; `vlm.py` stays as placeholder | `vlm.py` remains reserved for a future transformers-based VLM backend. `ollama.py` is the first concrete backend (Ollama HTTP API). Later, `vlm.py` can become a dispatcher routing to `ollama.py` or a transformers backend. Keeps backends pluggable without entangling Ollama-specific code with the transformers placeholder. |
 
 ### Environment details (ROCm server)
 
@@ -69,6 +72,14 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | 8 | Interface | **CLI only** for v1 (Gradio deferred) |
 | 9 | Packaging | **setuptools** (`pyproject.toml`, src layout, console script entrypoint); `[tool.pdm]` retained for scripts only (was PDM — changed during Phase A) |
 | 10 | Phasing | **Phase A: ViT MVP → Phase B: VLM stage** (validate ROCm before loading the 3B VLM) |
+| 11 | VLM backend module | **`ollama.py`** (Ollama HTTP API) is the first concrete backend; `vlm.py` stays as a placeholder for a future transformers backend. CLI calls `ollama.py` directly when `--vlm` is set. |
+| 12 | VLM prompt | **Targeted description** — e.g. "Describe what is happening in this image: the people, their actions, state of dress, and the setting." Produces richer captions that match more lexicon patterns. Stored as a module constant, easy to tune. |
+| 13 | Ollama unavailable | **Fail fast** — when `--vlm` is passed but Ollama is unreachable or the model isn't pulled, exit 1 with a clear message before scanning starts. No sidecar written. |
+| 14 | VRAM management | **Configurable: `--unload-vit-before-vlm` flag** (default off). Off = keep both loaded (~4.1 GB peak, faster for batch). On = `del pipe` + `torch.cuda.empty_cache()` before VLM calls, reload ViT for next video (~3.5 GB peak, safer when other GPU services are running). |
+| 15 | Ollama `keep_alive` | **`keep_alive="10m"` during scans, explicit unload at scan end.** Prevents Ollama's default 5-min unload from forcing a mid-scan model reload (4s load penalty per caption), and frees VRAM for other services when the scan finishes. |
+| 16 | Mid-scan VLM failure | **Degrade, don't abort.** If captioning fails on video N of a batch (timeout/OOM/crash), log a warning, write the sidecar with ViT results and `vlm: null`, and continue to the next video. Decision #13 fail-fast applies only to the pre-scan availability check — ViT results remain valuable even when the VLM stage fails. |
+| 17 | VLM request timeout | **120s default per caption request** on `ollama.Client`. At ~11s/caption a hung request without a timeout stalls a batch scan indefinitely. |
+| 18 | Re-scan idempotency | **Non-VLM re-scan preserves existing VLM data.** Upsert only touches columns the current scan produced: a scan without `--vlm` leaves `vlm_model`/`act_tags` (DB) and the sidecar `vlm` block untouched; a scan with `--vlm` overwrites them. Prevents accidental clobbering of expensive caption results. |
 
 ## Objective
 
@@ -90,23 +101,6 @@ Ship `video-nsfw-tagger` as an installable CLI:
 
 **Throughput (validated on RX 6600/ROCm):** ViT 41 ms/frame (5x faster than Mac CPU's 210 ms/frame). VLM 11s per caption with `qwen3-vl:4b`.
 
-## Environment mismatch & stack constraints
-
-| Plan assumed | Dev machine (this Mac) |
-|--------------|------------------------|
-| Linux + RX 6600 (gfx1032) + ROCm | macOS 15.7.7, i5-8257U, Iris Plus 645, **CPU only** |
-| GPU PyTorch | x86_64 macOS torch tops out at **2.2.2**, no MPS |
-
-Pins discovered during feasibility:
-
-- **Python 3.12** (system python3 is 3.14 — torch incompatible)
-- `torch==2.2.2` (CPU wheel) on the Mac; official ROCm torch wheels on the Linux target
-- `transformers>=4.40,<5` (transformers 5.x requires torch ≥2.4)
-- `numpy<2` (torch 2.2.2 compiled against NumPy 1.x)
-- `pillow`, `safetensors`; ffmpeg/ffprobe on PATH
-- **CLI / terminal UX:** `typer[all]>=0.16.0` (provides `typer` + `rich` for shell completion, rich help, and progress output) and `rich` explicitly declared for custom console/progress UI
-- **Mac dev constraint:** the `pyproject.toml`/pdm lock for Phase A must include **only the Falconsai ViT stack**. Do not include `qwen-vl-utils`, `accelerate` for VLM, or any other VLM-only dependencies until the project is moved to the ROCm server.
-
 ## Architecture
 
 ```
@@ -120,7 +114,8 @@ src/video_nsfw_tagger/
 ├── aggregate.py      # per-video stats: nsfw_percent, max_score, verdict, flagged_frames
 ├── sidecar.py        # read/write video.nsfw.json (atomic write)
 ├── db.py             # sqlite3 stdlib: schema init, upsert, query helpers
-├── vlm.py            # Phase B: VLM captioner via Ollama HTTP API (qwen3-vl:4b default)
+├── vlm.py            # Phase B placeholder (future transformers backend; untouched in this iteration)
+├── ollama.py         # Phase B: Ollama HTTP API captioner (qwen3-vl:4b default) — first concrete VLM backend
 └── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags
 lexicon/
 └── acts.yaml         # editable keyword/phrase → tag mapping
@@ -130,14 +125,13 @@ tests/
 ├── test_db.py
 ├── test_lexicon.py   # Phase B
 └── fixtures/         # synthetic ffmpeg-generated clips (no real content)
-pyproject.toml        # PDM; [project.scripts] vnt = "video_nsfw_tagger.cli:app"
-pdm.lock
+pyproject.toml        # setuptools backend, src layout; [project.scripts] vnt = "video_nsfw_tagger.cli:app"; [tool.pdm.scripts] retained for lint/test shortcuts
 README.md
 ```
 
-## Starting `pyproject.toml` template
+## Appendix: original `pyproject.toml` boilerplate (historical)
 
-The following PDM/Typer/Ruff boilerplate is the starting point for the project. During Phase A, the `name`, `requires-python`, and `dependencies` fields are customized for `video-nsfw-tagger` and the Falconsai stack; the lint/test tooling stays unchanged.
+The project was bootstrapped from this PDM/Typer/Ruff boilerplate during Phase A. Kept for reference only — the actual `pyproject.toml` in the repo is authoritative (setuptools backend, ROCm pins).
 
 ```toml
 [project]
@@ -227,7 +221,9 @@ markers = [
   "verdict": "nsfw",
   "flagged_frames": [{"frame": 7, "timestamp_s": 7.0, "score": 0.94}],
   "vlm": {
+    "backend": "ollama",
     "model": "qwen3-vl:4b",
+    "host": "http://localhost:11434",
     "captions": [{"frame": 7, "caption": "..."}],
     "act_tags": ["tag1", "tag2"]
   },
@@ -262,12 +258,14 @@ CREATE TABLE IF NOT EXISTS videos (
 ```bash
 vnt scan <file|dir> [--recursive] [--threshold 0.7] [--fps 1] [--max-duration N]
          [--db PATH] [--device auto|cpu|cuda|mps]
-         [--vlm] [--vlm-model HF_ID] [--vlm-top-k N] [--lexicon PATH]
+         [--vlm] [--vlm-model MODEL] [--vlm-top-k N] [--lexicon PATH]
+         [--unload-vit-before-vlm]
 vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 ```
 
 - `scan` on a directory batches all supported video files; writes sidecar next to each video and upserts into the DB (default `./video_nsfw_index.db`). Rich console for progress output.
-- `--vlm` is a no-op with a printed notice in Phase A builds (flag scaffolded in Phase B).
+- `--vlm` enables VLM captioning via Ollama (Phase B). Fails fast if Ollama is unreachable or the model isn't pulled. `--vlm-model` accepts Ollama model names (e.g. `qwen3-vl:4b`, `hf.co/lihaoyun6/Qwen3-VL-2B-Instruct-abliterated_GGUF:Q5_K_M`).
+- `--unload-vit-before-vlm` (default off): when set, the ViT pipeline is unloaded (`del` + `torch.cuda.empty_cache()`) before VLM calls on each video, then reloaded for the next. Use when VRAM is constrained (other GPU services running). Off keeps both loaded (~4.1 GB peak, faster for batch scans).
 
 ## Implementation plan
 
@@ -293,15 +291,23 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 ### Phase B — VLM stage (develop against ROCm target; CPU optional/slow) — 🟡 In progress
 
 - [x] Validate ROCm on Linux target: torch 2.9.1+rocm6.4 from `https://download.pytorch.org/whl/rocm6.4`; `torch.cuda.is_available()` returns `True`; `HSA_OVERRIDE_GFX_VERSION=10.3.0` confirmed; `rocm-smi` shows GPU during load. ViT: 41 ms/frame, 644 MB VRAM. Ollama VLM: `qwen3-vl:4b` 100% GPU, 3.5 GB VRAM, 11s/caption.
-- [ ] `vlm.py` — replace `NotImplementedError` placeholder with Ollama HTTP API client; default `qwen3-vl:4b`; `--vlm-model` override accepts Ollama model names; NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score). **Tests skip when Ollama is unavailable.**
+- [ ] `ollama.py` — new module: `OllamaCaptioner` class (wraps `ollama.Client`) + module-level `caption_frames()`; default `qwen3-vl:4b`; `check_available()` fail-fast (verifies Ollama reachable + model pulled); targeted prompt (module constant); `keep_alive="10m"` during scans + explicit unload at scan end (decision #15); 120s per-request timeout (decision #17); NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score, via a pure frame-selection helper for testability). `vlm.py` stays untouched as a placeholder for a future transformers backend.
+- [ ] `config.py` — add `DEFAULT_OLLAMA_MODEL = "qwen3-vl:4b"` + `DEFAULT_OLLAMA_HOST = "http://localhost:11434"`; **remove the config-level `DEFAULT_VLM_MODEL`** (duplicated in `vlm.py`; currently also feeds the CLI `--vlm-model` default — three sources of truth). CLI `--vlm-model` default switches to `DEFAULT_OLLAMA_MODEL`.
 - [x] `lexicon.py` + `lexicon/acts.yaml` — keyword/phrase → tag mapping; case-insensitive phrase match; editable without code changes (implemented in Phase A)
-- [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block and DB columns
+- [ ] Wire `--vlm` into CLI scan flow: fail-fast check before scan loop; per-video VLM captioning on flagged frames **inside the `extract.extracted_frames(...)` context** (frames are deleted on exit — captioning after the `with` block would hit missing files); `--unload-vit-before-vlm` flag (default off); remove Phase A no-op notice; per-frame caption progress output
+- [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block (with `backend` + `host` fields); DB gets `vlm_model` + `act_tags` only — captions stay sidecar-only, existing columns suffice, no migration needed
+- [ ] `tests/test_ollama.py` — unit tests with mocked `ollama.Client` (top_k selection, frame-to-path mapping, caption structure, `check_available` success/failure); integration test marked `@pytest.mark.integration` (skips when Ollama unavailable or model missing)
 - [ ] Throughput benchmark on RX 6600 (ViT path and gated VLM path); document results in README
 
 **Phase B acceptance criteria:**
 
 - `vnt scan --vlm` on a flagged clip adds non-empty `vlm.captions` to the sidecar and lexicon-derived `act_tags` where matched.
+- `vnt scan --vlm` fails fast with a clear error if Ollama is unreachable or the model isn't pulled (no sidecar written).
+- Mid-scan VLM failure degrades gracefully: sidecar written with ViT results + `vlm: null`, batch continues (decision #16).
+- Non-VLM re-scan of a previously VLM-scanned video preserves existing `vlm` sidecar block and DB `vlm_model`/`act_tags` (decision #18).
 - VLM never runs on frames below the NSFW threshold (verified by log/call count in tests).
+- `--unload-vit-before-vlm` peak VRAM verified by measurement, not assertion: integration test captures `torch.cuda.max_memory_allocated()` (or `rocm-smi` sample) for both flag states; unloaded ≈3.5 GB, loaded ≈4.1 GB.
+- `vlm.py` remains untouched (placeholder for future transformers backend).
 - ROCm run shows GPU utilization via `rocm-smi`; CPU fallback path still works with `--device cpu`.
 
 ## Out of scope
