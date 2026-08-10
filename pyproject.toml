@@ -8,11 +8,14 @@ license = { file = "LICENSE" }
 dependencies = [
     "typer[all]>=0.27.0",
     "rich>=15.0.0",
-    "torch>=2.2.0,<2.3",
+    # ROCm torch wheels; install via:
+    #   pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+    "torch>=2.5",
     "transformers>=4.40,<5",
-    "numpy<2",
     "pillow",
     "safetensors",
+    "ollama>=0.4.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
