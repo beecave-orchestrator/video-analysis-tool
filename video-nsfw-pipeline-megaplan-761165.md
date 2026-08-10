@@ -1,11 +1,57 @@
 # Video NSFW Analysis Pipeline — Megaplan
 
-Build a local, offline, privacy-first CLI tool that samples video frames with ffmpeg, scores them with the Falconsai NSFW ViT, gates NSFW-positive frames through a pluggable local VLM (default Qwen2.5-VL-3B) for captions, derives act tags via an offline keyword lexicon, and writes JSON sidecars plus a per-directory SQLite index — phased as ViT MVP first (Phase A), then the VLM stage (Phase B), targeting Linux + AMD RX 6600/ROCm with CPU fallback.
+Build a local, offline, privacy-first CLI tool that samples video frames with ffmpeg, scores them with the Falconsai NSFW ViT, gates NSFW-positive frames through a pluggable local VLM (default Qwen3-VL-4B via Ollama) for captions, derives act tags via an offline keyword lexicon, and writes JSON sidecars plus a per-directory SQLite index — phased as ViT MVP first (Phase A), then the VLM stage (Phase B), targeting Linux + AMD RX 6600/ROCm with CPU fallback.
 
 - **Source plan:** `2026-07-09-video-nsfw-analysis-pipeline.md` (workspace root)
 - **Feasibility:** verified in prior session (see "Feasibility findings" below)
-- **Development constraint:** Primary development and the PoC happen on an Intel MacBook (CPU only). **Heavy dependencies — especially the 3B VLM — are NOT installed on this machine.** The project moves to the AMD RX 6600 / ROCm server for VLM validation and Phase B.
-- **Status:** ready for implementation after review
+- **Development constraint:** Phase A was developed on an Intel MacBook (CPU only). Phase B environment setup and validation completed on the AMD RX 6600 / ROCm server. The project is now **ROCm-only** — the Mac dev constraint no longer applies.
+- **Status:** Phase A complete, Phase B environment validated, Phase B code implementation pending
+
+---
+
+## Current status (updated 2026-08-10)
+
+### Phase A — ViT MVP: ✅ Complete
+
+All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a720e44`). See "Phase A — ViT MVP" section below for the original checklist (all items checked off).
+
+### Phase B — VLM stage: 🟡 Environment validated, code implementation pending
+
+**Completed:**
+
+- [x] Validate ROCm on Linux target: torch 2.9.1+rocm6.4 installed from `https://download.pytorch.org/whl/rocm6.4`; `torch.cuda.is_available()` returns `True`; device `AMD Radeon RX 6600`; `HSA_OVERRIDE_GFX_VERSION=10.3.0` confirmed working
+- [x] Falconsai ViT validated on GPU: 41 ms/frame (5x faster than Mac CPU), 644 MB VRAM
+- [x] Ollama VLM validated via HTTP API: `qwen3-vl:4b` runs 100% on GPU (3.5 GB VRAM, 11s per caption); 2B fallback model also works with 19% CPU offload
+- [x] `pyproject.toml` updated for ROCm-only: torch pin loosened to `>=2.5`, `numpy<2` removed, `ollama>=0.4.0` + `pyyaml>=6.0` added
+- [x] Existing Phase A tests pass with new ROCm environment (9/9, no regressions)
+- [x] Findings documented in `docs/rocm-validation.md`
+
+**Pending (next session):**
+
+- [ ] `vlm.py` — replace `NotImplementedError` placeholder with real Ollama HTTP API client
+- [ ] Wire `--vlm` flag into CLI scan flow (currently a no-op notice)
+- [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block and DB columns
+- [ ] Phase B unit/integration tests (VLM mocked/skipped when Ollama unavailable)
+- [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
+
+### Scope changes from original plan
+
+| # | Original decision | Changed to | Reason |
+|---|-------------------|------------|--------|
+| 6 | VLM model: `Qwen/Qwen2.5-VL-3B-Instruct` via transformers | `qwen3-vl:4b` via **Ollama HTTP API** | Ollama manages VRAM/quantization; 4B q4_K_M (3.3 GB) runs 100% on GPU vs 3B fp16 (6 GB) that wouldn't fit alongside other services. No need for `qwen-vl-utils`/`accelerate` in the Python project. |
+| 9 | Packaging: PDM | setuptools (kept `[tool.pdm]` for scripts only) | Deviation from Phase A; build backend is `setuptools.build_meta` with src layout. PDM scripts retained via `[tool.pdm.scripts]`. |
+| — | Mac dev constraint (torch<2.3, numpy<2) | ROCm-only target | Project moved to ROCm server. torch pin loosened to `>=2.5` for ROCm wheels (2.5–2.10). Mac CPU dev path no longer supported. |
+| — | VLM loaded directly via transformers | VLM called via Ollama HTTP API (`localhost:11434`) | Ollama container (`ollama-rocm`) already running with ROCm. Shared model store via bind-mount of `~/.ollama`. Avoids VRAM management complexity. Models: `qwen3-vl:4b` (default), 2B abliterated (fallback). |
+
+### Environment details (ROCm server)
+
+- **GPU:** AMD Radeon RX 6600 (gfx1032, 8 GB VRAM)
+- **ROCm:** 7.1.1; `HSA_OVERRIDE_GFX_VERSION=10.3.0` required for gfx1032
+- **Python:** 3.12.13 in `.venv/`
+- **PyTorch:** 2.9.1+rocm6.4 (from `https://download.pytorch.org/whl/rocm6.4`)
+- **Ollama:** 0.32.5 (Docker container `ollama-rocm`, bind-mount `~/.ollama`)
+- **VLM models available:** `qwen3-vl:4b` (3.3 GB, 100% GPU), `hf.co/lihaoyun6/Qwen3-VL-2B-Instruct-abliterated_GGUF:Q5_K_M` (2.1 GB, 81% GPU), `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (3.0 GB)
+- **Full validation report:** `docs/rocm-validation.md`
 
 ---
 
@@ -18,10 +64,10 @@ Build a local, offline, privacy-first CLI tool that samples video frames with ff
 | 3 | Output | **JSON sidecar per video + SQLite index** |
 | 4 | SQLite location | `./video_nsfw_index.db` in cwd / next to first input; `--db PATH` override |
 | 5 | VLM invocation | **NSFW-gated only** — VLM runs solely on frames above the NSFW threshold (plus optional top-K cap) |
-| 6 | VLM model | **Pluggable: default `Qwen/Qwen2.5-VL-3B-Instruct`**, override via `--vlm-model` |
+| 6 | VLM model | **Pluggable: default `qwen3-vl:4b` via Ollama HTTP API** (was `Qwen/Qwen2.5-VL-3B-Instruct` via transformers — changed during Phase B validation; see scope changes above), override via `--vlm-model` |
 | 7 | Act-tag derivation | **Keyword/phrase lexicon parse** of captions (deterministic, editable, no extra model) |
 | 8 | Interface | **CLI only** for v1 (Gradio deferred) |
-| 9 | Packaging | **PDM** (`pyproject.toml` + `pdm.lock`, console script entrypoint) |
+| 9 | Packaging | **setuptools** (`pyproject.toml`, src layout, console script entrypoint); `[tool.pdm]` retained for scripts only (was PDM — changed during Phase A) |
 | 10 | Phasing | **Phase A: ViT MVP → Phase B: VLM stage** (validate ROCm before loading the 3B VLM) |
 
 ## Objective
@@ -38,10 +84,11 @@ Ship `video-nsfw-tagger` as an installable CLI:
 | ffmpeg 8.1.2 frame extraction @ 1 fps | **Pass** | 3s clip → 3 PNGs in ~20 ms |
 | `Falconsai/nsfw_image_detection` (ViT, Apache-2.0, ~327 MB) | **Pass** | CPU pipeline; synthetic frame scored `normal` 0.9996; ~0.5 s first frame, ~0.21 s/frame batched |
 | CLIP zero-shot (`open_clip` ViT-B-32) | **Weak** | High NSFW mass on SFW test pattern → unreliable alone; not in v1 path |
-| `Qwen/Qwen2.5-VL-3B-Instruct` | **Not run; do NOT install on this Mac** | Sharded safetensors on HF; too heavy for an i5-8257U/Iris 645. **Install and validate only on the RX 6600 / ROCm server after the PoC moves.** |
-| Offline after first download | **Yes** | Models cache under `~/.cache/huggingface` |
+| `Qwen/Qwen2.5-VL-3B-Instruct` | **Superseded** | Originally planned for direct transformers loading. Replaced by `qwen3-vl:4b` via Ollama HTTP API during Phase B validation — see scope changes above. |
+| `qwen3-vl:4b` via Ollama (Phase B validation) | **Pass** | 100% GPU on RX 6600, 3.5 GB VRAM, 11s per caption (4s load + 4.7s eval). Accurate captions on synthetic test pattern. |
+| Offline after first download | **Yes** | ViT caches under `~/.cache/huggingface`; VLM models in `~/.ollama` (shared with Docker container) |
 
-**Throughput estimate (Intel Mac CPU):** 1-min video ≈ 12–30 s; 1-hour video ≈ 12–30 min. Expect ~5–20× speedup on RX 6600/ROCm (must be confirmed on target).
+**Throughput (validated on RX 6600/ROCm):** ViT 41 ms/frame (5x faster than Mac CPU's 210 ms/frame). VLM 11s per caption with `qwen3-vl:4b`.
 
 ## Environment mismatch & stack constraints
 
@@ -73,7 +120,7 @@ src/video_nsfw_tagger/
 ├── aggregate.py      # per-video stats: nsfw_percent, max_score, verdict, flagged_frames
 ├── sidecar.py        # read/write video.nsfw.json (atomic write)
 ├── db.py             # sqlite3 stdlib: schema init, upsert, query helpers
-├── vlm.py            # Phase B: pluggable VLM captioner (Qwen2.5-VL default)
+├── vlm.py            # Phase B: VLM captioner via Ollama HTTP API (qwen3-vl:4b default)
 └── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags
 lexicon/
 └── acts.yaml         # editable keyword/phrase → tag mapping
@@ -180,7 +227,7 @@ markers = [
   "verdict": "nsfw",
   "flagged_frames": [{"frame": 7, "timestamp_s": 7.0, "score": 0.94}],
   "vlm": {
-    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "model": "qwen3-vl:4b",
     "captions": [{"frame": 7, "caption": "..."}],
     "act_tags": ["tag1", "tag2"]
   },
@@ -224,17 +271,17 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 
 ## Implementation plan
 
-### Phase A — ViT MVP (develop and verify on this Mac; no VLM deps)
+### Phase A — ViT MVP (develop and verify on this Mac; no VLM deps) — ✅ Complete
 
-- [ ] `pdm init` project: Python 3.12 requires-python, deps pinned for **Mac Phase A** (`typer[all]`, `rich`, `torch==2.2.2`, `transformers>=4.40,<5`, `numpy<2`, `pillow`, `safetensors` — no VLM/Qwen/accelerate-VLM, no `torch>=2.4`); console script `vnt` and `python -m video_nsfw_tagger` entry points
-- [ ] `device.py` — resolve `auto`: cuda→mps→cpu; expose torch/ROCm info for `vnt config-show`
-- [ ] `extract.py` — ffprobe duration; ffmpeg `-vf fps=1` into `tempfile.TemporaryDirectory`; yield (index, timestamp, path); guarantee cleanup
-- [ ] `classify.py` — lazy-load pipeline once; batch inference (batch size flag, default 8)
-- [ ] `aggregate.py` + `sidecar.py` — stats, verdict, atomic sidecar write
-- [ ] `db.py` — stdlib sqlite3, idempotent schema, upsert by `path`
-- [ ] `cli.py` — `scan` (file/dir/recursive), `report`, `config-show`
-- [ ] Tests: pure-logic units (aggregate, sidecar round-trip, db upsert) + one synthetic ffmpeg clip integration test; no network, no real content
-- [ ] README: install (PDM), quickstart, threshold tuning notes, privacy statement
+- [x] `pdm init` project: Python 3.12 requires-python, deps pinned for **Mac Phase A** (`typer[all]`, `rich`, `torch==2.2.2`, `transformers>=4.40,<5`, `numpy<2`, `pillow`, `safetensors` — no VLM/Qwen/accelerate-VLM, no `torch>=2.4`); console script `vnt` and `python -m video_nsfw_tagger` entry points
+- [x] `device.py` — resolve `auto`: cuda→mps→cpu; expose torch/ROCm info for `vnt config-show`
+- [x] `extract.py` — ffprobe duration; ffmpeg `-vf fps=1` into `tempfile.TemporaryDirectory`; yield (index, timestamp, path); guarantee cleanup
+- [x] `classify.py` — lazy-load pipeline once; batch inference (batch size flag, default 8)
+- [x] `aggregate.py` + `sidecar.py` — stats, verdict, atomic sidecar write
+- [x] `db.py` — stdlib sqlite3, idempotent schema, upsert by `path`
+- [x] `cli.py` — `scan` (file/dir/recursive), `report`, `config-show`
+- [x] Tests: pure-logic units (aggregate, sidecar round-trip, db upsert) + one synthetic ffmpeg clip integration test; no network, no real content
+- [x] README: install (PDM), quickstart, threshold tuning notes, privacy statement
 
 **Phase A acceptance criteria:**
 
@@ -243,11 +290,11 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 - Temp frames are removed after every run (success and failure paths).
 - Unit + integration tests pass offline (`HF_HUB_OFFLINE=1` after first model download).
 
-### Phase B — VLM stage (develop against ROCm target; CPU optional/slow)
+### Phase B — VLM stage (develop against ROCm target; CPU optional/slow) — 🟡 In progress
 
-- [ ] Validate ROCm on Linux target: official ROCm torch wheel, `torch.cuda.is_available()`, `HSA_OVERRIDE_GFX_VERSION=gfx1030` if needed, `rocm-smi` during load
-- [ ] `vlm.py` — pluggable captioner protocol; default `Qwen/Qwen2.5-VL-3B-Instruct`; `--vlm-model` override; NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score). **First test on the AMD RX 6600 / ROCm server; on this Mac the VLM code is structurally implemented but the tests skip unless `--device cuda` is available or explicit CI server flag is set.**
-- [ ] `lexicon.py` + `lexicon/acts.yaml` — keyword/phrase → tag mapping; case-insensitive phrase match; editable without code changes
+- [x] Validate ROCm on Linux target: torch 2.9.1+rocm6.4 from `https://download.pytorch.org/whl/rocm6.4`; `torch.cuda.is_available()` returns `True`; `HSA_OVERRIDE_GFX_VERSION=10.3.0` confirmed; `rocm-smi` shows GPU during load. ViT: 41 ms/frame, 644 MB VRAM. Ollama VLM: `qwen3-vl:4b` 100% GPU, 3.5 GB VRAM, 11s/caption.
+- [ ] `vlm.py` — replace `NotImplementedError` placeholder with Ollama HTTP API client; default `qwen3-vl:4b`; `--vlm-model` override accepts Ollama model names; NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score). **Tests skip when Ollama is unavailable.**
+- [x] `lexicon.py` + `lexicon/acts.yaml` — keyword/phrase → tag mapping; case-insensitive phrase match; editable without code changes (implemented in Phase A)
 - [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block and DB columns
 - [ ] Throughput benchmark on RX 6600 (ViT path and gated VLM path); document results in README
 
@@ -271,8 +318,9 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| ROCm/PyTorch on gfx1032 | Medium | High | `HSA_OVERRIDE_GFX_VERSION=gfx1030`; official ROCm wheels; CPU fallback documented; validate in Phase B step 1 |
-| VLM too heavy for 8 GB VRAM | Medium | Medium | 3B default; quantize/offload if OOM; `--vlm-model` swap to lighter model |
+| ~~ROCm/PyTorch on gfx1032~~ | ~~Medium~~ | ~~High~~ | **Resolved:** torch 2.9.1+rocm6.4 works with `HSA_OVERRIDE_GFX_VERSION=10.3.0`; ViT and VLM both validated on GPU |
+| ~~VLM too heavy for 8 GB VRAM~~ | ~~Medium~~ | ~~Medium~~ | **Resolved:** Ollama manages VRAM; `qwen3-vl:4b` (q4_K_M, 3.3 GB) runs 100% on GPU with 3.5 GB VRAM; 2B fallback available with CPU offload |
+| Ollama VLM refuses NSFW content | Medium | Medium | Abliterated models used (`qwen3-vl:4b` is abliterated; 2B fallback is also abliterated). Document clearly in README. |
 | Act-tag false positives from lexicon | High | Low–Med | Deterministic lexicon is auditable/editable; captions stored alongside tags for user review |
 | Long-video runtime | Medium | Medium | 1 fps sampling, batch inference, `--max-duration`, GPU path |
 | Model bias / accuracy unknown on real corpora | Medium | Medium | Only smoke-tested; user tunes `--threshold` on own samples; document limitation |
@@ -280,28 +328,37 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 ## Verification commands
 
 ```bash
-# Setup (dev Mac)
-pdm install
-pdm run vnt config-show          # torch version, device resolution
+# Setup (ROCm target)
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+pip install -e ".[dev]"
+export HSA_OVERRIDE_GFX_VERSION=10.3.0   # required for RX 6600 (gfx1032)
 
-# Synthetic end-to-end (offline-safe)
+vnt config-show                    # torch version, device resolution
+
+# Synthetic end-to-end (offline-safe after first model download)
 ffmpeg -f lavfi -i testsrc=duration=5:size=320x240:rate=30 -pix_fmt yuv420p -y /tmp/vnt-sample.mp4
-pdm run vnt scan /tmp/vnt-sample.mp4
+vnt scan /tmp/vnt-sample.mp4
 cat /tmp/vnt-sample.nsfw.json
-pdm run vnt report
+vnt report
 
 # Tests
-pdm run pytest -q
+pytest -q
 
-# ROCm target (Phase B)
+# ROCm / Ollama validation
 rocm-smi
 python -c "import torch; print(torch.cuda.is_available(), torch.version.hip)"
-pdm run vnt scan --vlm /path/to/sample.mp4
+docker exec ollama-rocm ollama list    # check VLM models available
+vnt scan --vlm /path/to/sample.mp4     # Phase B (not yet implemented)
 ```
 
 ## Notes
 
 - All processing local; the "decline if minor-related" rule is a hard boundary outside the pipeline.
 - Test fixtures must be synthetic (ffmpeg-generated patterns) — no real NSFW/SFW content in the repo or tests.
-- HF models are public and unauthenticated; first run downloads ~327 MB (ViT) / ~6 GB (VLM) into `~/.cache/huggingface`.
+- ViT model (~327 MB) caches under `~/.cache/huggingface`; first run downloads it.
+- VLM models are stored in `~/.ollama` (shared with the `ollama-rocm` Docker container via bind-mount); `qwen3-vl:4b` is 3.3 GB. Pull with `docker exec ollama-rocm ollama pull qwen3-vl:4b`.
+- Abliterated VLM models are used because the base Qwen3-VL may refuse to caption NSFW content. This is documented in the README and `docs/rocm-validation.md`.
 - Follow the repo's writing-style guide for README/docs (warm, clear, direct, practical).
