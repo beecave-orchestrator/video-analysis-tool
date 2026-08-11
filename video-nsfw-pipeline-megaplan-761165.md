@@ -5,17 +5,24 @@ Build a local, offline, privacy-first CLI tool that samples video frames with ff
 - **Source plan:** `2026-07-09-video-nsfw-analysis-pipeline.md` (workspace root)
 - **Feasibility:** verified in prior session (see "Feasibility findings" below)
 - **Development constraint:** Phase A was developed on an Intel MacBook (CPU only). Phase B environment setup and validation completed on the AMD RX 6600 / ROCm server. The project is now **ROCm-only** — the Mac dev constraint no longer applies.
-- **Status:** Phase A complete, Phase B environment validated, Phase B plan revised (Ollama backend split into `ollama.py`), code implementation pending
+- **Status:** Phase A complete, Phase B code implemented and verified end-to-end on real video (2026-08-11); default VLM switched to abliterated Qwen3-VL-4B; lexicon hardened (word-boundary matching, expanded `acts.yaml`). Remaining: RX 6600 throughput benchmark documented in README
 
 ---
 
-## Current status (updated 2026-08-10)
+## Current status (updated 2026-08-11)
 
 ### Phase A — ViT MVP: ✅ Complete
 
 All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a720e44`). See "Phase A — ViT MVP" section below for the original checklist (all items checked off).
 
-### Phase B — VLM stage: 🟡 Environment validated, code implementation pending
+### Phase B — VLM stage: 🟡 Code complete + verified end-to-end; throughput benchmark pending
+
+**Done 2026-08-11:**
+
+- [x] End-to-end verification with a real video file (synthetic `testsrc2` clip) on the RX 6600: ViT path (`vnt scan` → sidecar + SQLite, GPU `cuda:0`) and VLM path (`--threshold 0 --vlm --vlm-top-k 1` → real Ollama caption in sidecar `vlm` block, `vlm_model`/`act_tags` in DB). NSFW gating confirmed: at default threshold nothing was flagged, VLM never fired.
+- [x] Default VLM switched from `qwen3-vl:4b` (not actually pulled) to `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` in `config.DEFAULT_OLLAMA_MODEL`; README + `ollama.py` docstring + tests updated. `--vlm` now works out of the box against the local Ollama instance.
+- [x] Lexicon hardened: `find_tags` switched from raw substring matching to word-boundary regex (`(?<!\w)…(?!\w)`) — `ass` no longer matches "glasses", `pet` no longer matches "carpet". Regression test added (`test_find_tags_uses_word_boundaries`).
+- [x] `acts.yaml` expanded by user (10 → 19 tags, incl. `positions_actions`, `verbal_dirty`, `body_fluids`, `clothing_removal`, `intensity_descriptors`), then audited: 2 duplicates removed, ~70 overly generic words pruned or phrased-up (`yes`, `more`, `camera`, `master`, `plug`, `wet`, `hard`, …) to kill false positives. 522 → 449 patterns. Adversarial innocent sentence now yields 0 tags (was 4); representative NSFW caption yields 6 correct tags. 22/22 tests pass.
 
 **Completed:**
 
@@ -34,17 +41,19 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 - [x] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block (with `backend`/`host`); DB gets `vlm_model` + `act_tags` only; non-VLM re-scan preserves existing VLM data (decision #18, verified). (done 2026-08-10)
 - [x] Phase B unit/integration tests (`tests/test_ollama.py` with mocked `ollama.Client`; integration test skips when Ollama unavailable). Frame-selection extracted as pure `select_flagged_frames()` helper. 24/24 tests pass. (done 2026-08-10)
 - [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
-- [ ] Rich progress for VLM stage: per-frame caption progress ("captioning frame 3/7") — at ~11s/caption a bare per-video spinner is too opaque
+- [x] Rich progress for VLM stage: per-frame caption progress ("captioning frame 3/7") — at ~11s/caption a bare per-video spinner is too opaque. Implemented in `cli.py` ("Captioning {video} frame {i}/{n}").
 
 ### Scope changes from original plan
 
 | # | Original decision | Changed to | Reason |
-|---|-------------------|------------|--------|
+| --- | ------------------- | ------------ | -------- |
 | 6 | VLM model: `Qwen/Qwen2.5-VL-3B-Instruct` via transformers | `qwen3-vl:4b` via **Ollama HTTP API** | Ollama manages VRAM/quantization; 4B q4_K_M (3.3 GB) runs 100% on GPU vs 3B fp16 (6 GB) that wouldn't fit alongside other services. No need for `qwen-vl-utils`/`accelerate` in the Python project. |
 | 9 | Packaging: PDM | setuptools (kept `[tool.pdm]` for scripts only) | Deviation from Phase A; build backend is `setuptools.build_meta` with src layout. PDM scripts retained via `[tool.pdm.scripts]`. |
 | — | Mac dev constraint (torch<2.3, numpy<2) | ROCm-only target | Project moved to ROCm server. torch pin loosened to `>=2.5` for ROCm wheels (2.5–2.10). Mac CPU dev path no longer supported. |
 | — | VLM loaded directly via transformers | VLM called via Ollama HTTP API (`localhost:11434`) | Ollama container (`ollama-rocm`) already running with ROCm. Shared model store via bind-mount of `~/.ollama`. Avoids VRAM management complexity. Models: `qwen3-vl:4b` (default), 2B abliterated (fallback). |
 | — | VLM backend in `vlm.py` | **Separate `ollama.py` module**; `vlm.py` stays as placeholder | `vlm.py` remains reserved for a future transformers-based VLM backend. `ollama.py` is the first concrete backend (Ollama HTTP API). Later, `vlm.py` can become a dispatcher routing to `ollama.py` or a transformers backend. Keeps backends pluggable without entangling Ollama-specific code with the transformers placeholder. |
+| 6b | Default VLM: `qwen3-vl:4b` | `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` | `qwen3-vl:4b` was validated during Phase B but never actually pulled into the shared `~/.ollama` store; the abliterated Huihui Qwen3-VL-4B (Q4_K_M, 3.0 GB) is what's deployed. Abliteration also mitigates NSFW refusals. `--vlm` works out of the box now (done 2026-08-11). |
+| 7b | Lexicon matching: case-insensitive substring | **Word-boundary regex** (`(?<!\w)…(?!\w)`) | Substring matching caused false positives (`ass` in "glasses", `pet` in "carpet"). Switch plus pruning of ~70 generic words in `acts.yaml` reduced adversarial-sentence false positives from 4 tags to 0 (done 2026-08-11). |
 
 ### Environment details (ROCm server)
 
@@ -61,14 +70,14 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 ## Locked decisions
 
 | # | Decision | Choice |
-|---|----------|--------|
+| --- | ---------- | -------- |
 | 1 | v1 feature set | Broad NSFW gate + **VLM captions** (act descriptions second stage) |
 | 2 | Primary target | **Linux + RX 6600 (gfx1032) + ROCm**; Intel Mac for light CPU smoke tests only |
 | 3 | Output | **JSON sidecar per video + SQLite index** |
 | 4 | SQLite location | `./video_nsfw_index.db` in cwd / next to first input; `--db PATH` override |
 | 5 | VLM invocation | **NSFW-gated only** — VLM runs solely on frames above the NSFW threshold (plus optional top-K cap) |
-| 6 | VLM model | **Pluggable: default `qwen3-vl:4b` via Ollama HTTP API** (was `Qwen/Qwen2.5-VL-3B-Instruct` via transformers — changed during Phase B validation; see scope changes above), override via `--vlm-model` |
-| 7 | Act-tag derivation | **Keyword/phrase lexicon parse** of captions (deterministic, editable, no extra model) |
+| 6 | VLM model | **Pluggable: default `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (abliterated Qwen3-VL 4B) via Ollama HTTP API** (was `qwen3-vl:4b`, and before that `Qwen/Qwen2.5-VL-3B-Instruct` via transformers — see scope changes), override via `--vlm-model` |
+| 7 | Act-tag derivation | **Keyword/phrase lexicon parse** of captions (deterministic, editable, no extra model); matching is case-insensitive with word boundaries (not raw substring) |
 | 8 | Interface | **CLI only** for v1 (Gradio deferred) |
 | 9 | Packaging | **setuptools** (`pyproject.toml`, src layout, console script entrypoint); `[tool.pdm]` retained for scripts only (was PDM — changed during Phase A) |
 | 10 | Phasing | **Phase A: ViT MVP → Phase B: VLM stage** (validate ROCm before loading the 3B VLM) |
@@ -91,19 +100,21 @@ Ship `video-nsfw-tagger` as an installable CLI:
 ## Feasibility findings (verified, prior session)
 
 | Component | Result | Evidence |
-|-----------|--------|----------|
+| ----------- | -------- | ---------- |
 | ffmpeg 8.1.2 frame extraction @ 1 fps | **Pass** | 3s clip → 3 PNGs in ~20 ms |
 | `Falconsai/nsfw_image_detection` (ViT, Apache-2.0, ~327 MB) | **Pass** | CPU pipeline; synthetic frame scored `normal` 0.9996; ~0.5 s first frame, ~0.21 s/frame batched |
 | CLIP zero-shot (`open_clip` ViT-B-32) | **Weak** | High NSFW mass on SFW test pattern → unreliable alone; not in v1 path |
 | `Qwen/Qwen2.5-VL-3B-Instruct` | **Superseded** | Originally planned for direct transformers loading. Replaced by `qwen3-vl:4b` via Ollama HTTP API during Phase B validation — see scope changes above. |
 | `qwen3-vl:4b` via Ollama (Phase B validation) | **Pass** | 100% GPU on RX 6600, 3.5 GB VRAM, 11s per caption (4s load + 4.7s eval). Accurate captions on synthetic test pattern. |
+| End-to-end scan with real video (2026-08-11) | **Pass** | Synthetic 5s `testsrc2` clip: ViT path wrote sidecar + DB on GPU; forced-flag VLM path (`--threshold 0 --vlm-top-k 1`) produced a real caption from the abliterated Qwen3-VL-4B; gating confirmed (no VLM call at default threshold). |
+| Abliterated Qwen3-VL-4B (`Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M`, now default) | **Pass** | Pulled in shared `~/.ollama`; passes `check_available()` fail-fast and captions real frames via `vnt scan --vlm` with no `--vlm-model` override. |
 | Offline after first download | **Yes** | ViT caches under `~/.cache/huggingface`; VLM models in `~/.ollama` (shared with Docker container) |
 
 **Throughput (validated on RX 6600/ROCm):** ViT 41 ms/frame (5x faster than Mac CPU's 210 ms/frame). VLM 11s per caption with `qwen3-vl:4b`.
 
 ## Architecture
 
-```
+```dir
 src/video_nsfw_tagger/
 ├── __init__.py
 ├── cli.py            # Typer CLI: scan, report, config-show; uses Annotated[...] options, version callback, lazy imports (per Typer CLI standard)
@@ -115,15 +126,16 @@ src/video_nsfw_tagger/
 ├── sidecar.py        # read/write video.nsfw.json (atomic write)
 ├── db.py             # sqlite3 stdlib: schema init, upsert, query helpers
 ├── vlm.py            # Phase B placeholder (future transformers backend; untouched in this iteration)
-├── ollama.py         # Phase B: Ollama HTTP API captioner (qwen3-vl:4b default) — first concrete VLM backend
-└── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags
+├── ollama.py         # Phase B: Ollama HTTP API captioner (abliterated Qwen3-VL-4B default) — first concrete VLM backend
+└── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags (word-boundary matching)
 lexicon/
-└── acts.yaml         # editable keyword/phrase → tag mapping
+└── acts.yaml         # editable keyword/phrase → tag mapping (19 tags, 449 patterns)
 tests/
 ├── test_aggregate.py
 ├── test_sidecar.py
 ├── test_db.py
-├── test_lexicon.py   # Phase B
+├── test_lexicon.py   # Phase B (incl. word-boundary regression test)
+├── test_ollama.py    # Phase B (mocked ollama.Client + optional integration)
 └── fixtures/         # synthetic ffmpeg-generated clips (no real content)
 pyproject.toml        # setuptools backend, src layout; [project.scripts] vnt = "video_nsfw_tagger.cli:app"; [tool.pdm.scripts] retained for lint/test shortcuts
 README.md
@@ -288,20 +300,20 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 - Temp frames are removed after every run (success and failure paths).
 - Unit + integration tests pass offline (`HF_HUB_OFFLINE=1` after first model download).
 
-### Phase B — VLM stage (develop against ROCm target; CPU optional/slow) — 🟡 In progress
+### Phase B — VLM stage (develop against ROCm target; CPU optional/slow) — 🟡 Code complete + verified end-to-end (2026-08-11); only README throughput benchmark remains
 
 - [x] Validate ROCm on Linux target: torch 2.9.1+rocm6.4 from `https://download.pytorch.org/whl/rocm6.4`; `torch.cuda.is_available()` returns `True`; `HSA_OVERRIDE_GFX_VERSION=10.3.0` confirmed; `rocm-smi` shows GPU during load. ViT: 41 ms/frame, 644 MB VRAM. Ollama VLM: `qwen3-vl:4b` 100% GPU, 3.5 GB VRAM, 11s/caption.
-- [ ] `ollama.py` — new module: `OllamaCaptioner` class (wraps `ollama.Client`) + module-level `caption_frames()`; default `qwen3-vl:4b`; `check_available()` fail-fast (verifies Ollama reachable + model pulled); targeted prompt (module constant); `keep_alive="10m"` during scans + explicit unload at scan end (decision #15); 120s per-request timeout (decision #17); NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score, via a pure frame-selection helper for testability). `vlm.py` stays untouched as a placeholder for a future transformers backend.
-- [ ] `config.py` — add `DEFAULT_OLLAMA_MODEL = "qwen3-vl:4b"` + `DEFAULT_OLLAMA_HOST = "http://localhost:11434"`; **remove the config-level `DEFAULT_VLM_MODEL`** (duplicated in `vlm.py`; currently also feeds the CLI `--vlm-model` default — three sources of truth). CLI `--vlm-model` default switches to `DEFAULT_OLLAMA_MODEL`.
-- [x] `lexicon.py` + `lexicon/acts.yaml` — keyword/phrase → tag mapping; case-insensitive phrase match; editable without code changes (implemented in Phase A)
-- [ ] Wire `--vlm` into CLI scan flow: fail-fast check before scan loop; per-video VLM captioning on flagged frames **inside the `extract.extracted_frames(...)` context** (frames are deleted on exit — captioning after the `with` block would hit missing files); `--unload-vit-before-vlm` flag (default off); remove Phase A no-op notice; per-frame caption progress output
-- [ ] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block (with `backend` + `host` fields); DB gets `vlm_model` + `act_tags` only — captions stay sidecar-only, existing columns suffice, no migration needed
-- [ ] `tests/test_ollama.py` — unit tests with mocked `ollama.Client` (top_k selection, frame-to-path mapping, caption structure, `check_available` success/failure); integration test marked `@pytest.mark.integration` (skips when Ollama unavailable or model missing)
+- [x] `ollama.py` — new module: `OllamaCaptioner` class (wraps `ollama.Client`) + module-level `caption_frames()`; default `qwen3-vl:4b`; `check_available()` fail-fast (verifies Ollama reachable + model pulled); targeted prompt (module constant); `keep_alive="10m"` during scans + explicit unload at scan end (decision #15); 120s per-request timeout (decision #17); NSFW-gated invocation only (frames ≥ threshold, optional `--vlm-top-k` cap by score, via a pure frame-selection helper for testability). `vlm.py` stays untouched as a placeholder for a future transformers backend.
+- [x] `config.py` — add `DEFAULT_OLLAMA_MODEL` + `DEFAULT_OLLAMA_HOST = "http://localhost:11434"`; **remove the config-level `DEFAULT_VLM_MODEL`** (duplicated in `vlm.py`; currently also feeds the CLI `--vlm-model` default — three sources of truth). CLI `--vlm-model` default switches to `DEFAULT_OLLAMA_MODEL`. Default model later set to the abliterated Qwen3-VL-4B GGUF actually pulled on the server (2026-08-11).
+- [x] `lexicon.py` + `lexicon/acts.yaml` — keyword/phrase → tag mapping; case-insensitive **word-boundary** match (hardened from substring matching 2026-08-11); editable without code changes (implemented in Phase A; `acts.yaml` expanded to 19 tags / 449 patterns and pruned of generic false-positive words 2026-08-11)
+- [x] Wire `--vlm` into CLI scan flow: fail-fast check before scan loop; per-video VLM captioning on flagged frames **inside the `extract.extracted_frames(...)` context** (frames are deleted on exit — captioning after the `with` block would hit missing files); `--unload-vit-before-vlm` flag (default off); remove Phase A no-op notice; per-frame caption progress output
+- [x] Merge `captions[]` / `act_tags[]` into sidecar `vlm` block (with `backend` + `host` fields); DB gets `vlm_model` + `act_tags` only — captions stay sidecar-only, existing columns suffice, no migration needed
+- [x] `tests/test_ollama.py` — unit tests with mocked `ollama.Client` (top_k selection, frame-to-path mapping, caption structure, `check_available` success/failure); integration test marked `@pytest.mark.integration` (skips when Ollama unavailable or model missing)
 - [ ] Throughput benchmark on RX 6600 (ViT path and gated VLM path); document results in README
 
 **Phase B acceptance criteria:**
 
-- `vnt scan --vlm` on a flagged clip adds non-empty `vlm.captions` to the sidecar and lexicon-derived `act_tags` where matched.
+- `vnt scan --vlm` on a flagged clip adds non-empty `vlm.captions` to the sidecar and lexicon-derived `act_tags` where matched. **Verified 2026-08-11** with a real video file (forced flagging via `--threshold 0`) — sidecar `vlm` block populated, DB row carries `vlm_model`/`act_tags`.
 - `vnt scan --vlm` fails fast with a clear error if Ollama is unreachable or the model isn't pulled (no sidecar written).
 - Mid-scan VLM failure degrades gracefully: sidecar written with ViT results + `vlm: null`, batch continues (decision #16).
 - Non-VLM re-scan of a previously VLM-scanned video preserves existing `vlm` sidecar block and DB `vlm_model`/`act_tags` (decision #18).
@@ -323,11 +335,11 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
+| ------ | ----------- | -------- | ------------ |
 | ~~ROCm/PyTorch on gfx1032~~ | ~~Medium~~ | ~~High~~ | **Resolved:** torch 2.9.1+rocm6.4 works with `HSA_OVERRIDE_GFX_VERSION=10.3.0`; ViT and VLM both validated on GPU |
 | ~~VLM too heavy for 8 GB VRAM~~ | ~~Medium~~ | ~~Medium~~ | **Resolved:** Ollama manages VRAM; `qwen3-vl:4b` (q4_K_M, 3.3 GB) runs 100% on GPU with 3.5 GB VRAM; 2B fallback available with CPU offload |
-| Ollama VLM refuses NSFW content | Medium | Medium | Abliterated models used (`qwen3-vl:4b` is abliterated; 2B fallback is also abliterated). Document clearly in README. |
-| Act-tag false positives from lexicon | High | Low–Med | Deterministic lexicon is auditable/editable; captions stored alongside tags for user review |
+| Ollama VLM refuses NSFW content | Low | Medium | **Mitigated:** default is the abliterated `Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (2026-08-11); 2B fallback is also abliterated. Documented in README. |
+| Act-tag false positives from lexicon | ~~High~~ Low | Low–Med | **Reduced 2026-08-11:** word-boundary matching in `find_tags` + pruning of ~70 generic words in `acts.yaml`; adversarial innocent text yields 0 tags. Lexicon remains deterministic, auditable, editable; captions stored alongside tags for user review |
 | Long-video runtime | Medium | Medium | 1 fps sampling, batch inference, `--max-duration`, GPU path |
 | Model bias / accuracy unknown on real corpora | Medium | Medium | Only smoke-tested; user tunes `--threshold` on own samples; document limitation |
 
@@ -357,7 +369,7 @@ pytest -q
 rocm-smi
 python -c "import torch; print(torch.cuda.is_available(), torch.version.hip)"
 docker exec ollama-rocm ollama list    # check VLM models available
-vnt scan --vlm /path/to/sample.mp4     # Phase B (not yet implemented)
+vnt scan --vlm /path/to/sample.mp4     # Phase B; add --threshold 0 --vlm-top-k 1 on a benign clip to force the VLM path
 ```
 
 ## Notes
@@ -365,6 +377,6 @@ vnt scan --vlm /path/to/sample.mp4     # Phase B (not yet implemented)
 - All processing local; the "decline if minor-related" rule is a hard boundary outside the pipeline.
 - Test fixtures must be synthetic (ffmpeg-generated patterns) — no real NSFW/SFW content in the repo or tests.
 - ViT model (~327 MB) caches under `~/.cache/huggingface`; first run downloads it.
-- VLM models are stored in `~/.ollama` (shared with the `ollama-rocm` Docker container via bind-mount); `qwen3-vl:4b` is 3.3 GB. Pull with `docker exec ollama-rocm ollama pull qwen3-vl:4b`.
+- VLM models are stored in `~/.ollama` (shared with the `ollama-rocm` Docker container via bind-mount). The default is the abliterated Qwen3-VL-4B GGUF (3.0 GB), already pulled; `qwen3-vl:4b` (3.3 GB, validated during Phase B) would need `docker exec ollama-rocm ollama pull qwen3-vl:4b`.
 - Abliterated VLM models are used because the base Qwen3-VL may refuse to caption NSFW content. This is documented in the README and `docs/rocm-validation.md`.
 - Follow the repo's writing-style guide for README/docs (warm, clear, direct, practical).
