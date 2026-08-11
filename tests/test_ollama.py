@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from video_nsfw_tagger import config
 from video_nsfw_tagger import ollama as ollama_mod
 from video_nsfw_tagger.ollama import OllamaCaptioner, select_flagged_frames
 
@@ -23,7 +24,9 @@ FLAGGED = [
 ]
 
 
-def _mock_client(model_names=("qwen3-vl:4b",), caption="a caption"):
+def _mock_client(
+    model_names=(config.DEFAULT_OLLAMA_MODEL,), caption="a caption"
+):
     client = MagicMock()
     client.list.return_value = SimpleNamespace(
         models=[SimpleNamespace(model=m) for m in model_names]
@@ -60,7 +63,7 @@ def test_select_flagged_frames_empty():
 
 def test_check_available_success():
     captioner = OllamaCaptioner()
-    captioner.client = _mock_client(("qwen3-vl:4b",))
+    captioner.client = _mock_client((config.DEFAULT_OLLAMA_MODEL,))
     captioner.check_available()  # should not raise
 
 
