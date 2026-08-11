@@ -88,11 +88,15 @@ def scan(
     ] = config.DEFAULT_BATCH_SIZE,
     vlm: Annotated[
         bool,
-        typer.Option("--vlm", help="Enable VLM captioning via Ollama"),
+        typer.Option(
+            "--vlm", "--ollama", help="Enable VLM captioning via Ollama"
+        ),
     ] = False,
     vlm_model: Annotated[
         str,
-        typer.Option("--vlm-model", help="Ollama VLM model name"),
+        typer.Option(
+            "--vlm-model", "--ollama-model", help="Ollama VLM model name"
+        ),
     ] = config.DEFAULT_OLLAMA_MODEL,
     ollama_host: Annotated[
         str,
@@ -353,7 +357,8 @@ def config_show() -> None:
     table.add_row("Default FPS", str(config.DEFAULT_FPS))
     table.add_row("Default batch size", str(config.DEFAULT_BATCH_SIZE))
     table.add_row("ViT model", config.DEFAULT_VIT_MODEL)
-    table.add_row("VLM model", config.DEFAULT_VLM_MODEL)
+    table.add_row("VLM model", config.DEFAULT_OLLAMA_MODEL)
+    table.add_row("Ollama host", config.DEFAULT_OLLAMA_HOST)
     table.add_row("Default DB", config.DEFAULT_DB)
     console.print(table)
 

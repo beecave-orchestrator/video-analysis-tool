@@ -3,7 +3,9 @@
 from pathlib import Path
 
 DEFAULT_VIT_MODEL = "Falconsai/nsfw_image_detection"
-DEFAULT_OLLAMA_MODEL = "qwen3-vl:4b"
+DEFAULT_OLLAMA_MODEL = (
+    "hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M"
+)
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_THRESHOLD = 0.7
 DEFAULT_FPS = 1.0

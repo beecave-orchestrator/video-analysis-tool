@@ -1,6 +1,7 @@
 """Offline keyword/phrase lexicon for act-tag derivation."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -33,7 +34,9 @@ def load_lexicon(path: Path) -> Dict[str, Any]:
 def find_tags(caption: str, lexicon: Dict[str, Iterable[str]]) -> List[str]:
     """Return the sorted tags whose patterns appear in ``caption``.
 
-    Matching is case-insensitive and exact-substring for the whole phrase.
+    Matching is case-insensitive and whole-phrase: a pattern only matches
+    when it is not embedded inside a larger word (e.g. ``ass`` does not
+    match ``glasses``), so common substrings don't produce false positives.
 
     Args:
         caption: VLM-generated caption text.
@@ -46,7 +49,8 @@ def find_tags(caption: str, lexicon: Dict[str, Iterable[str]]) -> List[str]:
     matched = set()
     for tag, patterns in lexicon.items():
         for pattern in patterns:
-            if str(pattern).lower() in text:
+            p = re.escape(str(pattern).lower())
+            if re.search(rf"(?<!\w){p}(?!\w)", text):
                 matched.add(tag)
                 break
     return sorted(matched)

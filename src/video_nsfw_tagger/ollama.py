@@ -1,7 +1,8 @@
 """Ollama HTTP API captioner — first concrete VLM backend.
 
 Calls a local Ollama server (default ``http://localhost:11434``) with a
-vision model (default ``qwen3-vl:4b``) to caption NSFW-flagged frames.
+vision model (default ``config.DEFAULT_OLLAMA_MODEL``, an abliterated
+Qwen3-VL 4B) to caption NSFW-flagged frames.
 ``vlm.py`` remains a placeholder for a future transformers-based backend.
 """
 
