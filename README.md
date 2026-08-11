@@ -37,12 +37,88 @@ vnt report
 ```bash
 vnt scan <file|dir> [--recursive] [--threshold 0.7] [--fps 1]
          [--max-duration N] [--db PATH] [--device auto|cpu|cuda|mps]
-         [--vlm] [--vlm-model HF_ID] [--vlm-top-k N] [--lexicon PATH]
+         [--vlm|--ollama] [--vlm-model|--ollama-model MODEL]
+         [--vlm-top-k N] [--lexicon PATH] [--unload-vit-before-vlm]
 vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 vnt config-show
 ```
 
-Use `--vlm` only on the ROCm target; it is a no-op in Phase A builds.
+`--vlm` captions frames above the NSFW threshold with a local VLM served by
+Ollama (default
+`hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M`, an
+abliterated Qwen3-VL 4B; `--vlm-model` accepts any pulled Ollama model name). The scan fails fast if Ollama is unreachable or the model isn't pulled.
+Captions are matched against a keyword lexicon (`--lexicon`, default
+`lexicon/acts.yaml`) to derive act tags.
+
+## How a scan works
+
+Think of it as an assembly line: the video is sliced into photos, a fast
+AI looks at every photo, and only the suspicious ones are sent to a
+second, smarter (but much slower) AI for a written description.
+
+Example: a 10-minute video at default settings.
+
+```mermaid
+flowchart TD
+    Start(["🎬 You run:<br/><b>vnt scan video.mp4 --vlm</b>"])
+
+    subgraph S1["STEP 1 — Slicing the video · takes seconds"]
+        B["🎞️ One snapshot per second<br/>10 min video → <b>600 photos</b><br/>stored in a temporary folder"]
+    end
+
+    subgraph S2["STEP 2 — Fast safety scan · ~25 seconds"]
+        C["⚡ AI #1 (image classifier)<br/>looks at every photo in batches of 8<br/>and gives each a 0–100% NSFW score"]
+        D["📊 Scores are tallied into<br/>a verdict for the whole video"]
+        C --> D
+    end
+
+    subgraph S3["STEP 3 — Detailed description · only when flagged"]
+        E{"❓ Any photo scored<br/>above 70%<br/>and --vlm enabled?"}
+        F["🧠 AI #2 (vision language model)<br/>writes a sentence describing<br/>each flagged photo (~11 s each)<br/><i>--vlm-top-k limits how many</i>"]
+        G["🏷️ Descriptions are scanned for<br/>keywords → content tags"]
+        E -- "yes" --> F --> G
+    end
+
+    subgraph S4["STEP 4 — Saving results"]
+        H["💾 A report file is saved next to the video<br/>(video.nsfw.json) and one row<br/>is added to the searchable database"]
+    end
+
+    Done(["🧹 Cleanup: temp photos deleted,<br/>AI models unloaded from the GPU"])
+
+    Start --> B
+    B --> C
+    D --> E
+    E -- "no, nothing flagged" --> H
+    G --> H
+    H --> Done
+
+    style S1 fill:#1a73e8,stroke:#1a73e8,color:#fff
+    style S2 fill:#188038,stroke:#188038,color:#fff
+    style S3 fill:#e37400,stroke:#e37400,color:#fff
+    style S4 fill:#c5221f,stroke:#c5221f,color:#fff
+    classDef slice fill:#e8f0fe,stroke:#1a73e8,color:#000
+    classDef fast fill:#e6f4ea,stroke:#188038,color:#000
+    classDef slow fill:#fef7e0,stroke:#e37400,color:#000
+    classDef save fill:#fce8e6,stroke:#c5221f,color:#000
+    classDef term fill:#f3e8fd,stroke:#a142f4,color:#000
+    class B slice
+    class C,D fast
+    class E,F,G slow
+    class H save
+    class Start,Done term
+```
+
+**How long does it take?** That depends on what the fast AI finds, not
+on how long the video is:
+
+| What the video contains | Time for 10 minutes of footage |
+| --- | --- |
+| Nothing flagged | ~30 seconds |
+| A few flagged moments | + ~11 s per flagged photo |
+| Almost everything flagged | capped by `--vlm-top-k` (e.g. `--vlm-top-k 10` adds ~2 min) |
+
+Everything runs locally on your machine — no frames or results ever
+leave it.
 
 ## Development
 
