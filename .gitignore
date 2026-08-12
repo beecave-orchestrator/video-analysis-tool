@@ -225,6 +225,8 @@ video_nsfw_index.db-*
 tests/fixtures/*.mp4
 tests/fixtures/*.mkv
 tests/fixtures/*.mov
+experiments/cache/
+experiments/results/
 
 watch/*.mp4
 watch/*.mkv
