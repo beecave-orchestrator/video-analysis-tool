@@ -102,10 +102,10 @@ def test_caption_frames_structure():
     captioner.client = _mock_client()
     selected = select_flagged_frames(FRAMES, FLAGGED, top_k=2)
     captions = captioner.caption_frames(selected)
-    assert captions == [
-        {"frame": 2, "timestamp_s": 1.0, "caption": "a caption"},
-        {"frame": 4, "timestamp_s": 3.0, "caption": "a caption"},
-    ]
+    assert [c["frame"] for c in captions] == [2, 4]
+    assert [c["timestamp_s"] for c in captions] == [1.0, 3.0]
+    assert [c["caption"] for c in captions] == ["a caption", "a caption"]
+    assert all(c["elapsed_s"] >= 0 for c in captions)
     # Gating check: exactly the selected frames were captioned, no others.
     assert captioner.client.chat.call_count == 2
 
