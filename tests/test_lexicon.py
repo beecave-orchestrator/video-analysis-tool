@@ -1,6 +1,18 @@
 """Tests for the offline act lexicon."""
 
-from video_nsfw_tagger.lexicon import find_tags
+from video_nsfw_tagger.lexicon import find_matches, find_tags
+
+
+def test_find_matches_returns_matched_patterns():
+    lexicon = {
+        "kissing": ["kiss", "making out"],
+        "nudity": ["nude", "naked"],
+    }
+    assert find_matches("Two people making out, fully naked", lexicon) == {
+        "kissing": ["making out"],
+        "nudity": ["naked"],
+    }
+    assert find_matches("Nothing here", lexicon) == {}
 
 
 def test_find_tags():
