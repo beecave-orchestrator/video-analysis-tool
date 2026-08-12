@@ -4,13 +4,23 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Tuple
 
 
 def get_duration(video_path: Path) -> float:
-    """Return the video duration in seconds using ffprobe."""
+    """Return the video duration in seconds using ffprobe.
+
+    Args:
+        video_path: Video file to probe.
+
+    Returns:
+        Duration in seconds.
+
+    Raises:
+        RuntimeError: If ffprobe fails or its output can't be parsed.
+    """
     cmd = [
         "ffprobe",
         "-v",
@@ -40,8 +50,21 @@ def _extract_to_dir(
     fps: float,
     max_duration: float | None,
     tmp: Path,
-) -> List[Tuple[int, float, Path]]:
-    """Run ffmpeg and collect sorted frame paths with their timestamps."""
+) -> list[tuple[int, float, Path]]:
+    """Run ffmpeg and collect sorted frame paths with their timestamps.
+
+    Args:
+        video_path: Video file to extract from.
+        fps: Frame sampling rate.
+        max_duration: Optional cap on seconds processed.
+        tmp: Directory to write frames into.
+
+    Returns:
+        ``(index, timestamp_s, path)`` tuples in frame order.
+
+    Raises:
+        RuntimeError: If ffmpeg exits non-zero.
+    """
     time_args = ["-t", str(max_duration)] if max_duration is not None else []
     cmd = [
         "ffmpeg",
@@ -60,7 +83,7 @@ def _extract_to_dir(
         raise RuntimeError(f"ffmpeg failed for {video_path}: {result.stderr.strip()}")
 
     pattern = re.compile(r"^frame_(\d{4})\.png$")
-    frames: List[Tuple[int, float, Path]] = []
+    frames: list[tuple[int, float, Path]] = []
     for frame_path in sorted(tmp.iterdir()):
         match = pattern.match(frame_path.name)
         if match:
@@ -75,7 +98,7 @@ def extracted_frames(
     video_path: Path,
     fps: float = 1.0,
     max_duration: float | None = None,
-) -> Iterator[List[Tuple[int, float, Path]]]:
+) -> Iterator[list[tuple[int, float, Path]]]:
     """Yield extracted frames from a temporary directory and clean it up on exit."""
     tmp = Path(tempfile.mkdtemp(prefix="vnt_frames_"))
     try:

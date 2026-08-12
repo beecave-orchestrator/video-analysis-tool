@@ -2,11 +2,12 @@
 
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any
 
 
-def load_lexicon(path: Path) -> Dict[str, Any]:
+def load_lexicon(path: Path) -> dict[str, Any]:
     """Load a lexicon from JSON or YAML.
 
     Args:
@@ -14,6 +15,10 @@ def load_lexicon(path: Path) -> Dict[str, Any]:
 
     Returns:
         Mapping of tag names to lists of keyword/phrase patterns.
+
+    Raises:
+        ImportError: If a YAML lexicon is given but PyYAML isn't installed.
+        ValueError: If the file extension isn't ``.json``/``.yaml``/``.yml``.
     """
     ext = path.suffix.lower()
     text = path.read_text(encoding="utf-8")
@@ -31,7 +36,7 @@ def load_lexicon(path: Path) -> Dict[str, Any]:
     raise ValueError(f"Unsupported lexicon format: {path}")
 
 
-def find_tags(caption: str, lexicon: Dict[str, Iterable[str]]) -> List[str]:
+def find_tags(caption: str, lexicon: dict[str, Iterable[str]]) -> list[str]:
     """Return the sorted tags whose patterns appear in ``caption``.
 
     Matching is case-insensitive and whole-phrase: a pattern only matches

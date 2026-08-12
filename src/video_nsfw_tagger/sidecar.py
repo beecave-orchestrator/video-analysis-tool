@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 def sidecar_path(video_path: Path) -> Path:
@@ -13,13 +13,20 @@ def sidecar_path(video_path: Path) -> Path:
     return video_path.with_suffix(".nsfw.json")
 
 
-def read_sidecar(path: Path) -> Dict[str, Any]:
-    """Read and parse a sidecar JSON file."""
-    with open(path, "r", encoding="utf-8") as f:
+def read_sidecar(path: Path) -> dict[str, Any]:
+    """Read and parse a sidecar JSON file.
+
+    Args:
+        path: Sidecar file path.
+
+    Returns:
+        Parsed sidecar payload.
+    """
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def write_sidecar(path: Path, data: Dict[str, Any]) -> None:
+def write_sidecar(path: Path, data: dict[str, Any]) -> None:
     """Write ``data`` to ``path`` atomically using a temporary file + rename.
 
     Args:

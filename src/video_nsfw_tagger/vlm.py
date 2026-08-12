@@ -1,17 +1,16 @@
 """Pluggable local VLM captioner (Phase B placeholder)."""
 
 from pathlib import Path
-from typing import List
 
 DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 
 
 def caption_frames(
-    image_paths: List[Path],
+    image_paths: list[Path],
     model_name: str = DEFAULT_VLM_MODEL,
     device: str = "cpu",
     top_k: int | None = None,
-) -> List[dict]:
+) -> list[dict]:
     """Caption the provided frames using a local VLM.
 
     This is a Phase B placeholder. It is intentionally not wired in Phase A

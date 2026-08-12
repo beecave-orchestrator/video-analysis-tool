@@ -2,7 +2,7 @@
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -39,7 +39,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def upsert_video(conn: sqlite3.Connection, record: Dict[str, Any]) -> None:
+def upsert_video(conn: sqlite3.Connection, record: dict[str, Any]) -> None:
     """Insert or update a video row by ``path``.
 
     Args:
@@ -59,9 +59,9 @@ def upsert_video(conn: sqlite3.Connection, record: Dict[str, Any]) -> None:
 
 def query_videos(
     conn: sqlite3.Connection,
-    verdict: Optional[str] = None,
-    min_percent: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+    verdict: str | None = None,
+    min_percent: float | None = None,
+) -> list[dict[str, Any]]:
     """Query the index, optionally filtering by verdict and minimum NSFW %.
 
     Args:
@@ -72,8 +72,8 @@ def query_videos(
     Returns:
         Matching rows as dictionaries.
     """
-    where: List[str] = []
-    params: Dict[str, Any] = {}
+    where: list[str] = []
+    params: dict[str, Any] = {}
     if verdict:
         where.append("verdict = :verdict")
         params["verdict"] = verdict

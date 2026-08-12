@@ -7,8 +7,8 @@ Qwen3-VL 4B) to caption NSFW-flagged frames.
 """
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import ollama
 
@@ -23,18 +23,20 @@ DEFAULT_PROMPT = (
     "state of dress, and the setting."
 )
 
-REQUEST_TIMEOUT_S = 120
+# Generous default: the "Thinking" VLM variants occasionally produce very
+# long reasoning; a cold model load also counts against the first request.
+REQUEST_TIMEOUT_S = 300
 KEEP_ALIVE = "10m"
 
 # (frame_index, timestamp_s, path)
-FrameRef = Tuple[int, float, Path]
+FrameRef = tuple[int, float, Path]
 
 
 def select_flagged_frames(
     frames: Sequence[FrameRef],
-    flagged_frames: Sequence[Dict],
-    top_k: Optional[int] = None,
-) -> List[FrameRef]:
+    flagged_frames: Sequence[dict],
+    top_k: int | None = None,
+) -> list[FrameRef]:
     """Select flagged frames for captioning, capped by score.
 
     Args:
@@ -87,13 +89,9 @@ class OllamaCaptioner:
         try:
             response = self.client.list()
         except Exception as exc:
-            raise RuntimeError(
-                f"Ollama is unreachable at {self.host}: {exc}"
-            ) from exc
+            raise RuntimeError(f"Ollama is unreachable at {self.host}: {exc}") from exc
         models = [m.model for m in response.models]
-        if not any(
-            m == self.model or m.startswith(f"{self.model}:") for m in models
-        ):
+        if not any(m == self.model or m.startswith(f"{self.model}:") for m in models):
             raise RuntimeError(
                 f"Model {self.model!r} is not pulled on {self.host}. "
                 f"Available: {models or 'none'}. "
@@ -122,7 +120,7 @@ class OllamaCaptioner:
         )
         return response.message.content.strip()
 
-    def caption_frames(self, frames: Sequence[FrameRef]) -> List[Dict]:
+    def caption_frames(self, frames: Sequence[FrameRef]) -> list[dict]:
         """Caption selected frames.
 
         Args:
@@ -131,16 +129,14 @@ class OllamaCaptioner:
         Returns:
             List of ``{frame, timestamp_s, caption}`` dictionaries.
         """
-        captions: List[Dict] = []
+        captions: list[dict] = []
         for idx, timestamp, path in frames:
             logger.info("Captioning frame %s (%s)", idx, path)
-            captions.append(
-                {
-                    "frame": idx,
-                    "timestamp_s": timestamp,
-                    "caption": self.caption_frame(path),
-                }
-            )
+            captions.append({
+                "frame": idx,
+                "timestamp_s": timestamp,
+                "caption": self.caption_frame(path),
+            })
         return captions
 
     def unload(self) -> None:
@@ -157,11 +153,11 @@ class OllamaCaptioner:
 
 def caption_frames(
     frames: Sequence[FrameRef],
-    flagged_frames: Sequence[Dict],
+    flagged_frames: Sequence[dict],
     model: str = config.DEFAULT_OLLAMA_MODEL,
     host: str = config.DEFAULT_OLLAMA_HOST,
-    top_k: Optional[int] = None,
-) -> List[Dict]:
+    top_k: int | None = None,
+) -> list[dict]:
     """Convenience wrapper: select flagged frames and caption them.
 
     Args:

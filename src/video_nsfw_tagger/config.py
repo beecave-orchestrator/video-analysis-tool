@@ -11,9 +11,7 @@ DEFAULT_THRESHOLD = 0.7
 DEFAULT_FPS = 1.0
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_DB = "video_nsfw_index.db"
-DEFAULT_LEXICON = (
-    Path(__file__).resolve().parents[2] / "lexicon" / "acts.yaml"
-)
+DEFAULT_LEXICON = Path(__file__).resolve().parents[2] / "lexicon" / "acts.yaml"
 
 SUPPORTED_EXTS = {
     ".mp4",

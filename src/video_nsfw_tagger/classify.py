@@ -1,11 +1,11 @@
 """Falconsai NSFW ViT wrapper with batched inference."""
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import List, Sequence, Union
 
 from PIL import Image
-from transformers import pipeline
+from transformers import Pipeline, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +13,10 @@ DEFAULT_VIT_MODEL = "Falconsai/nsfw_image_detection"
 
 
 def load_pipeline(
-    device: Union[str, int],
+    device: str | int,
     model_name: str = DEFAULT_VIT_MODEL,
     batch_size: int = 8,
-):
+) -> Pipeline:
     """Load the image-classification pipeline for the given model.
 
     Args:
@@ -36,8 +36,15 @@ def load_pipeline(
     )
 
 
-def _nsfw_score(result: List[dict]) -> float:
-    """Extract the ``nsfw`` label score from a pipeline result entry."""
+def _nsfw_score(result: list[dict]) -> float:
+    """Extract the ``nsfw`` label score from a pipeline result entry.
+
+    Args:
+        result: Label/score entries for one image.
+
+    Returns:
+        The NSFW score, or 0.0 if no ``nsfw`` label is present.
+    """
     for entry in result:
         if entry.get("label", "").lower() == "nsfw":
             return float(entry["score"])
@@ -45,10 +52,10 @@ def _nsfw_score(result: List[dict]) -> float:
 
 
 def classify_batch(
-    pipe,
+    pipe: Pipeline,
     image_paths: Sequence[Path],
     batch_size: int = 8,
-) -> List[float]:
+) -> list[float]:
     """Score a list of frame paths, returning one NSFW score per frame.
 
     Args:

@@ -19,6 +19,7 @@ def resolve_device(request: str = "auto") -> str:
 
     Raises:
         RuntimeError: If a specific accelerator is requested but unavailable.
+        ValueError: If the device string is unknown.
     """
     if request == "auto":
         if torch.cuda.is_available():
