@@ -114,6 +114,14 @@ def scan(
         int | None,
         typer.Option("--vlm-top-k", help="Max flagged frames to caption", min=1),
     ] = None,
+    vlm_timeout: Annotated[
+        float,
+        typer.Option(
+            "--vlm-timeout",
+            help="Per-caption timeout in seconds (cold model load counts)",
+            min=10.0,
+        ),
+    ] = ollama_mod.REQUEST_TIMEOUT_S,
     lexicon: Annotated[
         Path,
         typer.Option("--lexicon", help="Lexicon file for act tags"),
@@ -138,7 +146,9 @@ def scan(
     captioner = None
     lexicon_data = None
     if vlm:
-        captioner = ollama_mod.OllamaCaptioner(model=vlm_model, host=ollama_host)
+        captioner = ollama_mod.OllamaCaptioner(
+            model=vlm_model, host=ollama_host, timeout=vlm_timeout
+        )
         vlog(f"Checking Ollama at {ollama_host} for model {vlm_model}...")
         try:
             captioner.check_available()
@@ -244,8 +254,7 @@ def scan(
                             progress.update(
                                 task,
                                 description=(
-                                    f"Captioning {video.name} "
-                                    f"frame {i}/{len(selected)}"
+                                    f"Captioning {video.name} frame {i}/{len(selected)}"
                                 ),
                             )
                             try:
