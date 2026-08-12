@@ -1,14 +1,17 @@
 """Shared test fixtures."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture(scope="session")
 def synthetic_video(tmp_path_factory):
-    """Generate a synthetic 5-second test video with ffmpeg."""
+    """Generate a synthetic 5-second test video with ffmpeg.
+
+    Returns:
+        Path to the generated video file.
+    """
     tmp = tmp_path_factory.mktemp("fixtures")
     video = tmp / "sample.mp4"
     cmd = [

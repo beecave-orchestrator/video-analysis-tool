@@ -18,9 +18,7 @@ def test_aggregate_one_flag():
     assert result.verdict == "nsfw"
     assert result.max_score == 0.85
     assert result.nsfw_percent == pytest.approx(33.33, rel=1e-2)
-    assert result.flagged_frames == [
-        {"frame": 2, "timestamp_s": 1.0, "score": 0.85}
-    ]
+    assert result.flagged_frames == [{"frame": 2, "timestamp_s": 1.0, "score": 0.85}]
 
 
 def test_aggregate_empty():

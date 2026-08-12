@@ -24,16 +24,12 @@ FLAGGED = [
 ]
 
 
-def _mock_client(
-    model_names=(config.DEFAULT_OLLAMA_MODEL,), caption="a caption"
-):
+def _mock_client(model_names=(config.DEFAULT_OLLAMA_MODEL,), caption="a caption"):
     client = MagicMock()
     client.list.return_value = SimpleNamespace(
         models=[SimpleNamespace(model=m) for m in model_names]
     )
-    client.chat.return_value = SimpleNamespace(
-        message=SimpleNamespace(content=caption)
-    )
+    client.chat.return_value = SimpleNamespace(message=SimpleNamespace(content=caption))
     return client
 
 
