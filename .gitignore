@@ -226,4 +226,6 @@ tests/fixtures/*.mp4
 tests/fixtures/*.mkv
 tests/fixtures/*.mov
 
-watch/fucked-in-her-favorite-hole.mp4
+watch/*.mp4
+watch/*.mkv
+watch/*.mov
