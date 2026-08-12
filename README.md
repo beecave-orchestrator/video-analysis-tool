@@ -39,7 +39,10 @@ vnt scan <file|dir> [--recursive] [--threshold 0.7] [--fps 1]
          [--max-duration N] [--db PATH] [--device auto|cpu|cuda|mps]
          [--vlm|--ollama] [--vlm-model|--ollama-model MODEL]
          [--vlm-top-k N] [--lexicon PATH] [--unload-vit-before-vlm]
+         [--vlm-prompt TEXT] [--vlm-prompt-file PATH] [--vlm-prompt-id ID]
+         [--frame-cache DIR]
 vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
+vnt prompt-report <run_dir> [--lexicon PATH]
 vnt config-show
 ```
 
@@ -49,6 +52,27 @@ Ollama (default
 abliterated Qwen3-VL 4B; `--vlm-model` accepts any pulled Ollama model name). The scan fails fast if Ollama is unreachable or the model isn't pulled.
 Captions are matched against a keyword lexicon (`--lexicon`, default
 `lexicon/acts.yaml`) to derive act tags.
+
+### Prompt experiments
+
+See [docs/prompt-experiments.md](docs/prompt-experiments.md) for the full
+guide to testing and selecting prompts.
+
+`--frame-cache DIR` caches extracted frames and ViT scores so repeated VLM
+runs (e.g. prompt sweeps) only rerun captioning. Pass `--vlm-prompt-file` or
+`--vlm-prompt` to override the default prompt; use `--vlm-prompt-id` to label
+the run in the sidecar. Then run the comparison report:
+
+```bash
+# Run 10 prompts against one sample
+scripts/10-prompt-test.sh watch/sample.mp4 --top-k 10
+
+# Manually
+echo "Describe this image." > prompt.txt
+vnt scan sample.mp4 --vlm --vlm-prompt-file prompt.txt \
+  --vlm-prompt-id my_prompt --frame-cache .vnt_cache
+vnt prompt-report experiments/results/<timestamp>
+```
 
 ## How a scan works
 
