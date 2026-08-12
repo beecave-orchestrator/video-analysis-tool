@@ -266,16 +266,22 @@ def scan(
                                     f"failed (frame {idx}): {exc}[/yellow]"
                                 )
                                 continue
+                            tags = lexicon_mod.find_tags(caption, lexicon_data)
                             captions.append({
                                 "frame": idx,
                                 "timestamp_s": ts,
                                 "caption": caption,
+                                "tags": tags,
                             })
                             preview = caption.strip()[:80]
                             vlog(
                                 f"Caption {i}/{len(selected)} done "
                                 f"(frame {idx}, {ts:.0f}s): "
                                 f"{preview or '(empty caption)'}..."
+                            )
+                            console.print(
+                                f"  [cyan]frame {idx} tags:[/cyan] "
+                                f"{', '.join(tags) or '-'}"
                             )
                         if failures:
                             console.print(
@@ -285,11 +291,7 @@ def scan(
                             )
                         if captions:
                             act_tags = sorted({
-                                tag
-                                for c in captions
-                                for tag in lexicon_mod.find_tags(
-                                    c["caption"], lexicon_data
-                                )
+                                tag for c in captions for tag in c["tags"]
                             })
                             vlm_block = {
                                 "backend": "ollama",
