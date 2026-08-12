@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -21,6 +22,8 @@ from video_nsfw_tagger import (
     db,
     device,
     extract,
+    framecache,
+    prompt_report,
     sidecar,
 )
 from video_nsfw_tagger import (
@@ -126,6 +129,32 @@ def scan(
         Path,
         typer.Option("--lexicon", help="Lexicon file for act tags"),
     ] = config.DEFAULT_LEXICON,
+    vlm_prompt: Annotated[
+        str | None,
+        typer.Option("--vlm-prompt", help="Override the VLM captioning prompt"),
+    ] = None,
+    vlm_prompt_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--vlm-prompt-file",
+            help="Read the VLM captioning prompt from a file",
+            exists=True,
+        ),
+    ] = None,
+    vlm_prompt_id: Annotated[
+        str | None,
+        typer.Option(
+            "--vlm-prompt-id",
+            help="Label recorded in the sidecar for prompt experiments",
+        ),
+    ] = None,
+    frame_cache: Annotated[
+        Path | None,
+        typer.Option(
+            "--frame-cache",
+            help="Cache extracted frames + ViT scores here for reuse",
+        ),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed progress for each step"),
@@ -134,6 +163,7 @@ def scan(
     """Scan video(s) and write sidecar + index entries.
 
     Raises:
+        typer.BadParameter: If both prompt options are provided.
         typer.Exit: If the VLM backend or lexicon is unavailable, no
             supported videos are found, or the ViT model fails to load.
     """
@@ -143,11 +173,25 @@ def scan(
             stamp = datetime.now().strftime("%H:%M:%S")
             console.print(f"[dim]{stamp}[/dim] [blue]·[/blue] {message}")
 
+    if vlm_prompt is not None and vlm_prompt_file is not None:
+        raise typer.BadParameter(
+            "--vlm-prompt and --vlm-prompt-file are mutually exclusive"
+        )
+
+    resolved_prompt = ollama_mod.DEFAULT_PROMPT
+    if vlm_prompt_file is not None:
+        resolved_prompt = vlm_prompt_file.read_text(encoding="utf-8").strip()
+    elif vlm_prompt is not None:
+        resolved_prompt = vlm_prompt
+
     captioner = None
     lexicon_data = None
     if vlm:
         captioner = ollama_mod.OllamaCaptioner(
-            model=vlm_model, host=ollama_host, timeout=vlm_timeout
+            model=vlm_model,
+            host=ollama_host,
+            timeout=vlm_timeout,
+            prompt=resolved_prompt,
         )
         vlog(f"Checking Ollama at {ollama_host} for model {vlm_model}...")
         try:
@@ -195,8 +239,176 @@ def scan(
             console=console,
         ) as progress:
             task = progress.add_task("Scanning videos...", total=len(videos))
+
+            def process_video(video: Path, frames: list, scores: list[float]) -> None:
+                """Aggregate, caption, and persist results for one video."""
+                nonlocal pipe
+                result = aggregate.aggregate(scores, threshold=threshold, fps=fps)
+                vlog(
+                    f"Classification done: {len(result.flagged_frames)}/"
+                    f"{len(scores)} frames flagged (max={result.max_score})"
+                )
+
+                # VLM stage (Phase B): caption flagged frames while they
+                # still exist (inside the extracted_frames context on a
+                # cache miss, or in the frame cache dir on a cache hit).
+                vlm_block = None
+                act_tags: list[str] = []
+                if captioner is not None and result.flagged_frames:
+                    selected = ollama_mod.select_flagged_frames(
+                        frames, result.flagged_frames, top_k=vlm_top_k
+                    )
+                    vlog(
+                        f"Selected {len(selected)} of "
+                        f"{len(result.flagged_frames)} flagged frames "
+                        f"for captioning"
+                    )
+                    if unload_vit_before_vlm:
+                        vlog("Unloading ViT to free VRAM for the VLM...")
+                        del pipe
+                        pipe = None
+                        if resolved == "cuda":
+                            import torch
+
+                            torch.cuda.empty_cache()
+                    # Decision #16: degrade, don't abort the batch. A
+                    # failed frame never discards captions already done.
+                    captions = []
+                    failures = 0
+                    for i, (idx, ts, path) in enumerate(selected, 1):
+                        progress.update(
+                            task,
+                            description=(
+                                f"Captioning {video.name} frame {i}/{len(selected)}"
+                            ),
+                        )
+                        start = time.monotonic()
+                        try:
+                            caption = captioner.caption_frame(path)
+                        except Exception as exc:
+                            failures += 1
+                            console.print(
+                                f"[yellow]Caption {i}/{len(selected)} "
+                                f"failed (frame {idx}): {exc}[/yellow]"
+                            )
+                            continue
+                        matches = lexicon_mod.find_matches(caption, lexicon_data)
+                        captions.append({
+                            "frame": idx,
+                            "timestamp_s": ts,
+                            "caption": caption,
+                            "tags": sorted(matches),
+                            "matches": matches,
+                            "elapsed_s": round(time.monotonic() - start, 2),
+                        })
+                        preview = caption.strip()[:80]
+                        vlog(
+                            f"Caption {i}/{len(selected)} done "
+                            f"(frame {idx}, {ts:.0f}s): "
+                            f"{preview or '(empty caption)'}..."
+                        )
+                        if matches:
+                            formatted = "; ".join(
+                                f"{tag}: {', '.join(patterns)}"
+                                for tag, patterns in sorted(matches.items())
+                            )
+                            console.print(
+                                f"  [cyan]frame {idx} tags:[/cyan] {formatted}"
+                            )
+                    if failures:
+                        console.print(
+                            f"[yellow]{failures}/{len(selected)} captions "
+                            f"failed; keeping the {len(captions)} that "
+                            f"succeeded.[/yellow]"
+                        )
+                    if captions:
+                        act_tags = sorted({tag for c in captions for tag in c["tags"]})
+                        vlm_block = {
+                            "backend": "ollama",
+                            "model": vlm_model,
+                            "host": ollama_host,
+                            "prompt": resolved_prompt,
+                            "prompt_id": vlm_prompt_id,
+                            "captions": captions,
+                            "act_tags": act_tags,
+                        }
+                        vlog(f"Act tags: {', '.join(act_tags) or 'none'}")
+                    progress.update(task, description=f"Scanning {video.name}")
+
+                duration = extract.get_duration(video)
+                side = sidecar.sidecar_path(video)
+                created = datetime.now(timezone.utc).astimezone().isoformat()
+
+                # Decision #18: a non-VLM scan preserves existing VLM data.
+                if captioner is None and side.exists():
+                    try:
+                        vlm_block = sidecar.read_sidecar(side).get("vlm")
+                    except Exception:
+                        vlm_block = None
+
+                payload = {
+                    "schema_version": 1,
+                    "video_path": str(video),
+                    "duration_s": duration,
+                    "fps_sampled": fps,
+                    "frames_total": len(scores),
+                    "threshold": threshold,
+                    "device": resolved,
+                    "model": config.DEFAULT_VIT_MODEL,
+                    "nsfw_percent": round(result.nsfw_percent, 2),
+                    "max_score": result.max_score,
+                    "verdict": result.verdict,
+                    "flagged_frames": result.flagged_frames,
+                    "vlm": vlm_block,
+                    "created_at": created,
+                }
+                sidecar.write_sidecar(side, payload)
+                vlog(f"Sidecar written to {side}")
+
+                record = {
+                    "path": str(video),
+                    "duration_s": duration,
+                    "frames_total": len(scores),
+                    "nsfw_percent": round(result.nsfw_percent, 2),
+                    "max_score": result.max_score,
+                    "verdict": result.verdict,
+                    "threshold": threshold,
+                    "model": config.DEFAULT_VIT_MODEL,
+                    "sidecar_path": str(side),
+                    "scanned_at": created,
+                }
+                if vlm_block is not None:
+                    record["vlm_model"] = vlm_block["model"]
+                    record["act_tags"] = json.dumps(vlm_block["act_tags"])
+                db.upsert_video(conn, record)
+                console.print(
+                    f"[green]Scanned[/green] {video} → {result.verdict} "
+                    f"(max={result.max_score}, "
+                    f"flagged={len(result.flagged_frames)})"
+                )
+                if act_tags:
+                    console.print(f"  [cyan]Act tags:[/cyan] {', '.join(act_tags)}")
+
             for video in videos:
                 progress.update(task, description=f"Scanning {video.name}")
+
+                key = None
+                if frame_cache is not None:
+                    key = framecache.cache_key(
+                        video, fps, max_duration, config.DEFAULT_VIT_MODEL
+                    )
+                    cached = framecache.load(frame_cache, key)
+                    if cached is not None:
+                        cached_frames, cached_scores = cached
+                        vlog(
+                            f"Frame cache hit for {video.name}: "
+                            f"{len(cached_frames)} frames, skipping "
+                            f"extraction and ViT classification"
+                        )
+                        process_video(video, cached_frames, cached_scores)
+                        progress.advance(task)
+                        continue
+
                 if pipe is None:
                     pipe = load_vit()
                 vlog(f"Extracting frames from {video.name} at {fps} fps...")
@@ -219,148 +431,21 @@ def scan(
                     scores = classify.classify_batch(
                         pipe, image_paths, batch_size=batch_size
                     )
-                    result = aggregate.aggregate(scores, threshold=threshold, fps=fps)
-                    vlog(
-                        f"Classification done: {len(result.flagged_frames)}/"
-                        f"{len(scores)} frames flagged (max={result.max_score})"
-                    )
-
-                    # VLM stage (Phase B): caption flagged frames while they
-                    # still exist inside the extracted_frames context.
-                    vlm_block = None
-                    act_tags: list[str] = []
-                    if captioner is not None and result.flagged_frames:
-                        selected = ollama_mod.select_flagged_frames(
-                            frames, result.flagged_frames, top_k=vlm_top_k
+                    process_video(video, frames, scores)
+                    if frame_cache is not None and key is not None:
+                        entry = framecache.save(
+                            frame_cache,
+                            key,
+                            frames,
+                            scores,
+                            metadata={
+                                "video_path": str(video),
+                                "fps": fps,
+                                "max_duration": max_duration,
+                                "model": config.DEFAULT_VIT_MODEL,
+                            },
                         )
-                        vlog(
-                            f"Selected {len(selected)} of "
-                            f"{len(result.flagged_frames)} flagged frames "
-                            f"for captioning"
-                        )
-                        if unload_vit_before_vlm:
-                            vlog("Unloading ViT to free VRAM for the VLM...")
-                            del pipe
-                            pipe = None
-                            if resolved == "cuda":
-                                import torch
-
-                                torch.cuda.empty_cache()
-                        # Decision #16: degrade, don't abort the batch. A
-                        # failed frame never discards captions already done.
-                        captions = []
-                        failures = 0
-                        for i, (idx, ts, path) in enumerate(selected, 1):
-                            progress.update(
-                                task,
-                                description=(
-                                    f"Captioning {video.name} frame {i}/{len(selected)}"
-                                ),
-                            )
-                            try:
-                                caption = captioner.caption_frame(path)
-                            except Exception as exc:
-                                failures += 1
-                                console.print(
-                                    f"[yellow]Caption {i}/{len(selected)} "
-                                    f"failed (frame {idx}): {exc}[/yellow]"
-                                )
-                                continue
-                            matches = lexicon_mod.find_matches(caption, lexicon_data)
-                            captions.append({
-                                "frame": idx,
-                                "timestamp_s": ts,
-                                "caption": caption,
-                                "tags": sorted(matches),
-                                "matches": matches,
-                            })
-                            preview = caption.strip()[:80]
-                            vlog(
-                                f"Caption {i}/{len(selected)} done "
-                                f"(frame {idx}, {ts:.0f}s): "
-                                f"{preview or '(empty caption)'}..."
-                            )
-                            if matches:
-                                formatted = "; ".join(
-                                    f"{tag}: {', '.join(patterns)}"
-                                    for tag, patterns in sorted(matches.items())
-                                )
-                                console.print(
-                                    f"  [cyan]frame {idx} tags:[/cyan] {formatted}"
-                                )
-                        if failures:
-                            console.print(
-                                f"[yellow]{failures}/{len(selected)} captions "
-                                f"failed; keeping the {len(captions)} that "
-                                f"succeeded.[/yellow]"
-                            )
-                        if captions:
-                            act_tags = sorted({
-                                tag for c in captions for tag in c["tags"]
-                            })
-                            vlm_block = {
-                                "backend": "ollama",
-                                "model": vlm_model,
-                                "host": ollama_host,
-                                "captions": captions,
-                                "act_tags": act_tags,
-                            }
-                            vlog(f"Act tags: {', '.join(act_tags) or 'none'}")
-                        progress.update(task, description=f"Scanning {video.name}")
-
-                    duration = extract.get_duration(video)
-                    side = sidecar.sidecar_path(video)
-                    created = datetime.now(timezone.utc).astimezone().isoformat()
-
-                    # Decision #18: a non-VLM scan preserves existing VLM data.
-                    if captioner is None and side.exists():
-                        try:
-                            vlm_block = sidecar.read_sidecar(side).get("vlm")
-                        except Exception:
-                            vlm_block = None
-
-                    payload = {
-                        "schema_version": 1,
-                        "video_path": str(video),
-                        "duration_s": duration,
-                        "fps_sampled": fps,
-                        "frames_total": len(scores),
-                        "threshold": threshold,
-                        "device": resolved,
-                        "model": config.DEFAULT_VIT_MODEL,
-                        "nsfw_percent": round(result.nsfw_percent, 2),
-                        "max_score": result.max_score,
-                        "verdict": result.verdict,
-                        "flagged_frames": result.flagged_frames,
-                        "vlm": vlm_block,
-                        "created_at": created,
-                    }
-                    sidecar.write_sidecar(side, payload)
-                    vlog(f"Sidecar written to {side}")
-
-                    record = {
-                        "path": str(video),
-                        "duration_s": duration,
-                        "frames_total": len(scores),
-                        "nsfw_percent": round(result.nsfw_percent, 2),
-                        "max_score": result.max_score,
-                        "verdict": result.verdict,
-                        "threshold": threshold,
-                        "model": config.DEFAULT_VIT_MODEL,
-                        "sidecar_path": str(side),
-                        "scanned_at": created,
-                    }
-                    if vlm_block is not None:
-                        record["vlm_model"] = vlm_block["model"]
-                        record["act_tags"] = json.dumps(vlm_block["act_tags"])
-                    db.upsert_video(conn, record)
-                    console.print(
-                        f"[green]Scanned[/green] {video} → {result.verdict} "
-                        f"(max={result.max_score}, "
-                        f"flagged={len(result.flagged_frames)})"
-                    )
-                    if act_tags:
-                        console.print(f"  [cyan]Act tags:[/cyan] {', '.join(act_tags)}")
+                        vlog(f"Frame cache saved to {entry}")
                 progress.advance(task)
     finally:
         conn.close()
@@ -409,6 +494,32 @@ def report(
         console.print(table)
     finally:
         conn.close()
+
+
+@app.command(name="prompt-report")
+def prompt_report_cmd(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(..., exists=True, help="Run dir with per-prompt sidecars"),
+    ],
+    lexicon: Annotated[
+        Path,
+        typer.Option("--lexicon", help="Lexicon file for act tags"),
+    ] = config.DEFAULT_LEXICON,
+) -> None:
+    """Aggregate a 10-prompt experiment run into a comparison report.
+
+    Raises:
+        typer.Exit: If no sidecars with VLM data are found.
+    """
+    lexicon_data = lexicon_mod.load_lexicon(lexicon)
+    rows = prompt_report.collect(run_dir, lexicon_data)
+    if not rows:
+        console.print(f"[yellow]No sidecars with VLM data found in {run_dir}[/yellow]")
+        raise typer.Exit(1)
+    prompt_report.print_table(rows, lexicon_data, console)
+    json_path, md_path = prompt_report.write_reports(run_dir, rows, lexicon_data)
+    console.print(f"[green]Report written:[/green] {json_path} + {md_path}")
 
 
 @app.command(name="config-show")

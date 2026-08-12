@@ -7,6 +7,7 @@ Qwen3-VL 4B) to caption NSFW-flagged frames.
 """
 
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -132,10 +133,13 @@ class OllamaCaptioner:
         captions: list[dict] = []
         for idx, timestamp, path in frames:
             logger.info("Captioning frame %s (%s)", idx, path)
+            start = time.monotonic()
+            caption = self.caption_frame(path)
             captions.append({
                 "frame": idx,
                 "timestamp_s": timestamp,
-                "caption": self.caption_frame(path),
+                "caption": caption,
+                "elapsed_s": round(time.monotonic() - start, 2),
             })
         return captions
 
