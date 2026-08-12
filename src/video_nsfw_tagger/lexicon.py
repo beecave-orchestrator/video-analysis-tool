@@ -36,8 +36,10 @@ def load_lexicon(path: Path) -> dict[str, Any]:
     raise ValueError(f"Unsupported lexicon format: {path}")
 
 
-def find_tags(caption: str, lexicon: dict[str, Iterable[str]]) -> list[str]:
-    """Return the sorted tags whose patterns appear in ``caption``.
+def find_matches(
+    caption: str, lexicon: dict[str, Iterable[str]]
+) -> dict[str, list[str]]:
+    """Return the matched patterns per tag for ``caption``.
 
     Matching is case-insensitive and whole-phrase: a pattern only matches
     when it is not embedded inside a larger word (e.g. ``ass`` does not
@@ -48,14 +50,32 @@ def find_tags(caption: str, lexicon: dict[str, Iterable[str]]) -> list[str]:
         lexicon: ``{tag: [patterns]}`` mapping.
 
     Returns:
-        Sorted, unique list of matched tags.
+        ``{tag: [matched patterns]}`` mapping; tags with no matches are
+        omitted.
     """
     text = caption.lower()
-    matched = set()
+    matches: dict[str, list[str]] = {}
     for tag, patterns in lexicon.items():
-        for pattern in patterns:
-            p = re.escape(str(pattern).lower())
-            if re.search(rf"(?<!\w){p}(?!\w)", text):
-                matched.add(tag)
-                break
-    return sorted(matched)
+        hits = [
+            str(pattern)
+            for pattern in patterns
+            if re.search(rf"(?<!\w){re.escape(str(pattern).lower())}(?!\w)", text)
+        ]
+        if hits:
+            matches[tag] = hits
+    return matches
+
+
+def find_tags(caption: str, lexicon: dict[str, Iterable[str]]) -> list[str]:
+    """Return the sorted tags whose patterns appear in ``caption``.
+
+    Thin wrapper over :func:`find_matches` when only tag names are needed.
+
+    Args:
+        caption: VLM-generated caption text.
+        lexicon: ``{tag: [patterns]}`` mapping.
+
+    Returns:
+        Sorted, unique list of matched tags.
+    """
+    return sorted(find_matches(caption, lexicon))

@@ -266,12 +266,13 @@ def scan(
                                     f"failed (frame {idx}): {exc}[/yellow]"
                                 )
                                 continue
-                            tags = lexicon_mod.find_tags(caption, lexicon_data)
+                            matches = lexicon_mod.find_matches(caption, lexicon_data)
                             captions.append({
                                 "frame": idx,
                                 "timestamp_s": ts,
                                 "caption": caption,
-                                "tags": tags,
+                                "tags": sorted(matches),
+                                "matches": matches,
                             })
                             preview = caption.strip()[:80]
                             vlog(
@@ -279,10 +280,14 @@ def scan(
                                 f"(frame {idx}, {ts:.0f}s): "
                                 f"{preview or '(empty caption)'}..."
                             )
-                            console.print(
-                                f"  [cyan]frame {idx} tags:[/cyan] "
-                                f"{', '.join(tags) or '-'}"
-                            )
+                            if matches:
+                                formatted = "; ".join(
+                                    f"{tag}: {', '.join(patterns)}"
+                                    for tag, patterns in sorted(matches.items())
+                                )
+                                console.print(
+                                    f"  [cyan]frame {idx} tags:[/cyan] {formatted}"
+                                )
                         if failures:
                             console.print(
                                 f"[yellow]{failures}/{len(selected)} captions "
