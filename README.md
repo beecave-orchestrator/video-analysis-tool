@@ -3,8 +3,13 @@
 A local, offline, privacy-first CLI for NSFW video analysis.
 
 `vnt scan <path>` samples frames with `ffmpeg`, scores each frame with the
-[Falconsai NSFW ViT](https://huggingface.co/Falconsai/nsfw_image_detection),
+[Falconsai NSFW ViT (2026 Edition)](https://huggingface.co/Falconsai/nsfw_image_detection_26),
 and writes a JSON sidecar plus a per-directory SQLite index.
+
+> **Note:** The 2026 ViT model is gated on Hugging Face. `vnt` automatically
+> reads an `HF_TOKEN` from the environment or from
+> `~/.config/insanely-fast-whisper-rocm/.env` (if present). You must accept
+> the model's gate terms on its HF page before the first download.
 
 Phase A ships the ViT pipeline. Phase B (VLM captioning via Ollama) is
 validated on the AMD RX 6600 / ROCm server — see

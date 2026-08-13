@@ -56,7 +56,9 @@ device AMD Radeon RX 6600
 
 ## Falconsai ViT on GPU
 
-Model: `Falconsai/nsfw_image_detection` (~327 MB download on first run).
+Model: `Falconsai/nsfw_image_detection_26` (gated; requires `HF_TOKEN`,
+~327 MB download on first run). The token is auto-loaded from
+`~/.config/insanely-fast-whisper-rocm/.env` or the `HF_TOKEN` env var.
 
 | Metric | Value |
 | ------ | ----- |
