@@ -54,6 +54,20 @@ error_exit() {
   exit 1
 }
 
+# Resolve how to invoke vnt: prefer an activated venv, then the project's
+# .venv, then pdm run. Prints the command prefix on stdout.
+resolve_vnt_cmd() {
+  if command -v vnt &>/dev/null; then
+    echo "vnt"
+  elif [[ -x ".venv/bin/vnt" ]]; then
+    echo ".venv/bin/vnt"
+  elif command -v pdm &>/dev/null; then
+    echo "pdm run vnt"
+  else
+    error_exit "Could not find vnt. Activate the venv (source .venv/bin/activate) or install PDM."
+  fi
+}
+
 # Extract the "## Prompt" section from a markdown prompt file.
 # Falls back to the full file if the section is absent.
 extract_prompt() {
@@ -122,6 +136,12 @@ main() {
   if [[ -z "${target}" ]]; then
     error_exit "TARGET is required"
   fi
+
+  local vnt_cmd
+  vnt_cmd="$(resolve_vnt_cmd)"
+  if [[ -n "${vnt_cmd}" ]]; then
+    echo "Using vnt via: ${vnt_cmd}"
+  fi
   if [[ ! -e "${target}" ]]; then
     error_exit "TARGET does not exist: ${target}"
   fi
@@ -180,7 +200,7 @@ main() {
     echo "=== Running prompt: ${prompt_id} ==="
 
     # shellcheck disable=SC2086
-    vnt scan "${target}" \
+    ${vnt_cmd} scan "${target}" \
       --vlm \
       --vlm-top-k "${top_k}" \
       --fps "${fps}" \
@@ -208,7 +228,8 @@ main() {
 
   echo ""
   echo "=== Generating report ==="
-  vnt prompt-report "${run_dir}" --db "${run_db}"
+  # shellcheck disable=SC2086
+  ${vnt_cmd} prompt-report "${run_dir}"
 
   echo ""
   echo "Done. Run artifacts: ${run_dir}"
