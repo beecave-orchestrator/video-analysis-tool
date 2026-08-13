@@ -109,7 +109,11 @@ class OllamaCaptioner:
             )
 
     def _chat_once(self, image_path: Path) -> str:
-        """Send a single caption request and return the raw reply."""
+        """Send a single caption request and return the raw reply.
+
+        Returns:
+            The model's reply text, stripped.
+        """
         response = self.client.chat(
             model=self.model,
             messages=[
@@ -131,17 +135,17 @@ class OllamaCaptioner:
             image_path: Path to a PNG/JPEG frame.
 
         Returns:
-            Caption text.
-
-        Raises:
-            Exception: The last error after all attempts are exhausted.
+            Caption text; the last request error is re-raised when all
+            attempts fail.
         """
+        last_exc: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
                 return self._chat_once(image_path)
             except Exception as exc:
+                last_exc = exc
                 if attempt >= self.retries:
-                    raise
+                    break
                 logger.warning(
                     "Caption attempt %s/%s for %s failed (%s); retrying",
                     attempt + 1,
@@ -149,7 +153,7 @@ class OllamaCaptioner:
                     image_path,
                     exc,
                 )
-        raise AssertionError("unreachable")
+        raise last_exc  # type: ignore[misc]
 
     def caption_frames(self, frames: Sequence[FrameRef]) -> list[dict]:
         """Caption selected frames.

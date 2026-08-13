@@ -254,7 +254,7 @@ def scan(
 
     # Lazy: the ViT is loaded on the first cache miss, so fully cached runs
     # (e.g. prompt experiments) never pay the load cost.
-    pipe: "Pipeline | None" = None
+    pipe: Pipeline | None = None
 
     conn = db.init_db(db_path)
     vlog(f"Database ready at {db_path}")

@@ -46,6 +46,8 @@ def load_hf_token() -> str | None:
 
     value = (values.get("HF_TOKEN") or "").strip()
     return value or None
+
+
 DEFAULT_OLLAMA_MODEL = (
     "hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M"
 )
