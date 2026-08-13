@@ -231,3 +231,4 @@ experiments/results/
 watch/*.mp4
 watch/*.mkv
 watch/*.mov
+*.zip
