@@ -65,6 +65,8 @@ class OllamaCaptioner:
         prompt: str = DEFAULT_PROMPT,
         timeout: float = REQUEST_TIMEOUT_S,
         keep_alive: str = KEEP_ALIVE,
+        think: bool = False,
+        retries: int = 1,
     ) -> None:
         """Initialise the captioner with an Ollama client.
 
@@ -74,11 +76,18 @@ class OllamaCaptioner:
             prompt: Captioning prompt sent with each image.
             timeout: Per-request timeout in seconds.
             keep_alive: How long Ollama keeps the model loaded per request.
+            think: Enable hidden reasoning on "Thinking" model variants.
+                Disabled by default: captioning doesn't need it and it
+                inflates latency enough to hit the request timeout.
+            retries: Extra attempts per frame after a failed request
+                (e.g. a timeout during a cold model load).
         """
         self.model = model
         self.host = host
         self.prompt = prompt
         self.keep_alive = keep_alive
+        self.think = think
+        self.retries = retries
         self.client = ollama.Client(host=host, timeout=timeout)
 
     def check_available(self) -> None:
@@ -99,15 +108,8 @@ class OllamaCaptioner:
                 f"Pull it with: ollama pull {self.model}"
             )
 
-    def caption_frame(self, image_path: Path) -> str:
-        """Caption a single frame image.
-
-        Args:
-            image_path: Path to a PNG/JPEG frame.
-
-        Returns:
-            Caption text.
-        """
+    def _chat_once(self, image_path: Path) -> str:
+        """Send a single caption request and return the raw reply."""
         response = self.client.chat(
             model=self.model,
             messages=[
@@ -117,9 +119,37 @@ class OllamaCaptioner:
                     "images": [str(image_path)],
                 }
             ],
+            think=self.think,
             keep_alive=self.keep_alive,
         )
         return response.message.content.strip()
+
+    def caption_frame(self, image_path: Path) -> str:
+        """Caption a single frame image, retrying failed requests.
+
+        Args:
+            image_path: Path to a PNG/JPEG frame.
+
+        Returns:
+            Caption text.
+
+        Raises:
+            Exception: The last error after all attempts are exhausted.
+        """
+        for attempt in range(self.retries + 1):
+            try:
+                return self._chat_once(image_path)
+            except Exception as exc:
+                if attempt >= self.retries:
+                    raise
+                logger.warning(
+                    "Caption attempt %s/%s for %s failed (%s); retrying",
+                    attempt + 1,
+                    self.retries + 1,
+                    image_path,
+                    exc,
+                )
+        raise AssertionError("unreachable")
 
     def caption_frames(self, frames: Sequence[FrameRef]) -> list[dict]:
         """Caption selected frames.

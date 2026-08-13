@@ -7,9 +7,11 @@ from pathlib import Path
 from PIL import Image
 from transformers import Pipeline, pipeline
 
+from video_nsfw_tagger import config
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_VIT_MODEL = "Falconsai/nsfw_image_detection"
+DEFAULT_VIT_MODEL = config.DEFAULT_VIT_MODEL
 
 
 def load_pipeline(
@@ -27,12 +29,21 @@ def load_pipeline(
     Returns:
         A ``transformers`` image-classification pipeline.
     """
+    token = config.load_hf_token()
+    if token is None:
+        logger.warning(
+            "No HF token found for %s; gated models will fail to load. "
+            "Set HF_TOKEN or add it to %s.",
+            model_name,
+            config.HF_TOKEN_ENV_PATH,
+        )
     logger.info("Loading NSFW ViT %s on %s", model_name, device)
     return pipeline(
         "image-classification",
         model=model_name,
         device=device,
         batch_size=batch_size,
+        token=token,
     )
 
 

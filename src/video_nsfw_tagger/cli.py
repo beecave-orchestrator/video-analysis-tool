@@ -155,6 +155,28 @@ def scan(
             help="Cache extracted frames + ViT scores here for reuse",
         ),
     ] = None,
+    vlm_think: Annotated[
+        bool,
+        typer.Option(
+            "--vlm-think/--no-vlm-think",
+            help="Enable hidden reasoning on Thinking VLM variants (slow)",
+        ),
+    ] = False,
+    vlm_retries: Annotated[
+        int,
+        typer.Option(
+            "--vlm-retries",
+            help="Retries per frame after a failed/timed-out caption",
+            min=0,
+        ),
+    ] = 1,
+    keep_vlm_loaded: Annotated[
+        bool,
+        typer.Option(
+            "--keep-vlm-loaded",
+            help="Skip the end-of-scan Ollama unload (keep model in VRAM)",
+        ),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed progress for each step"),
@@ -192,6 +214,8 @@ def scan(
             host=ollama_host,
             timeout=vlm_timeout,
             prompt=resolved_prompt,
+            think=vlm_think,
+            retries=vlm_retries,
         )
         vlog(f"Checking Ollama at {ollama_host} for model {vlm_model}...")
         try:
@@ -228,7 +252,9 @@ def scan(
             console.print(f"[red]Failed to load ViT model:[/red] {exc}")
             raise typer.Exit(1)
 
-    pipe = load_vit()
+    # Lazy: the ViT is loaded on the first cache miss, so fully cached runs
+    # (e.g. prompt experiments) never pay the load cost.
+    pipe: "Pipeline | None" = None
 
     conn = db.init_db(db_path)
     vlog(f"Database ready at {db_path}")
@@ -329,6 +355,7 @@ def scan(
                             "host": ollama_host,
                             "prompt": resolved_prompt,
                             "prompt_id": vlm_prompt_id,
+                            "think": vlm_think,
                             "captions": captions,
                             "act_tags": act_tags,
                         }
@@ -449,7 +476,7 @@ def scan(
                 progress.advance(task)
     finally:
         conn.close()
-        if captioner is not None:
+        if captioner is not None and not keep_vlm_loaded:
             vlog("Unloading Ollama model from VRAM...")
             captioner.unload()
 
