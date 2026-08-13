@@ -33,9 +33,13 @@ different prompts.
 ## Quick start
 
 ```bash
-# From the repo root, with the venv active and Ollama running:
+# From the repo root, with Ollama running:
 scripts/10-prompt-test.sh watch/sample.mp4 --top-k 10
 ```
+
+The script finds `vnt` automatically: it uses an activated venv if present,
+falls back to `.venv/bin/vnt`, and finally to `pdm run vnt`. If none are
+available it exits with an explanatory error.
 
 Results land in `experiments/results/<YYYYMMDD-HHMMSS>/`:
 
