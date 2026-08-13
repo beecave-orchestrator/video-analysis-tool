@@ -95,6 +95,43 @@ def test_caption_frame_sends_prompt_and_image():
     assert kwargs["messages"][0]["images"] == ["/tmp/f1.png"]
     assert kwargs["messages"][0]["content"] == ollama_mod.DEFAULT_PROMPT
     assert kwargs["keep_alive"] == ollama_mod.KEEP_ALIVE
+    assert kwargs["think"] is False
+
+
+def test_caption_frame_passes_think_when_enabled():
+    captioner = OllamaCaptioner(think=True)
+    captioner.client = _mock_client()
+    captioner.caption_frame(Path("/tmp/f1.png"))
+    assert captioner.client.chat.call_args.kwargs["think"] is True
+
+
+def test_caption_frame_retries_after_timeout():
+    captioner = OllamaCaptioner(retries=1)
+    client = _mock_client()
+    client.chat.side_effect = [TimeoutError("timed out"), client.chat.return_value]
+    captioner.client = client
+    assert captioner.caption_frame(Path("/tmp/f1.png")) == "a caption"
+    assert client.chat.call_count == 2
+
+
+def test_caption_frame_raises_after_retries_exhausted():
+    captioner = OllamaCaptioner(retries=1)
+    client = _mock_client()
+    client.chat.side_effect = TimeoutError("timed out")
+    captioner.client = client
+    with pytest.raises(TimeoutError):
+        captioner.caption_frame(Path("/tmp/f1.png"))
+    assert client.chat.call_count == 2
+
+
+def test_caption_frame_no_retry_by_default_zero_retries():
+    captioner = OllamaCaptioner(retries=0)
+    client = _mock_client()
+    client.chat.side_effect = TimeoutError("timed out")
+    captioner.client = client
+    with pytest.raises(TimeoutError):
+        captioner.caption_frame(Path("/tmp/f1.png"))
+    assert client.chat.call_count == 1
 
 
 def test_caption_frames_structure():
