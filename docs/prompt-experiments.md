@@ -70,13 +70,30 @@ scripts/10-prompt-test.sh TARGET [OPTIONS]
   --prompts-dir DIR  Prompt set (default experiments/prompts)
   --results-dir DIR  Results root (default experiments/results)
   --cache-dir DIR    Frame/score cache (default experiments/cache)
+  --vlm-timeout SEC  Per-caption timeout (default 600; cold load counts)
   --extra-opts STR   Extra options forwarded to vnt scan, e.g. "--recursive"
 ```
 
+The script applies several latency mitigations automatically:
+
+- **Thinking disabled** — `vnt scan` passes `think=False` to Ollama by
+  default, so the "Thinking" model variant answers directly instead of
+  burning minutes on hidden reasoning (opt back in with
+  `--extra-opts "--vlm-think"`).
+- **Model kept warm** — `--keep-vlm-loaded` is passed for all but the
+  last prompt, so the model is loaded once per experiment instead of
+  once per prompt.
+- **One retry per frame** — a timed-out caption is retried once before
+  counting as a failure (`--vlm-retries`, default 1).
+- **VRAM preflight** — the script warns when `rocm-smi` shows >60 % VRAM
+  already in use (other GPU containers can force partial CPU offload,
+  which turns ~40 s captions into multi-minute timeouts), and passes
+  `--unload-vit-before-vlm` to free the ViT during captioning.
+
 Always smoke-test first with `--top-k 2` (10 prompts × 2 captions ≈
-20 VLM calls) before a full run. With the default Thinking model a full
-10×10 run takes roughly 1–2 hours; the cache makes re-runs with a
-different `--top-k` or prompt set cheap.
+20 VLM calls) before a full run. The frame cache makes re-runs with a
+different `--top-k` or prompt set cheap, and fully cached runs skip the
+ViT load entirely.
 
 ## The 10 candidate prompts
 
