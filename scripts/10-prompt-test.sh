@@ -2,16 +2,27 @@
 set -euo pipefail
 
 # Script Description: Run a 10-prompt VLM captioning experiment for a target video.
-# Author: Devin
-# Version: 0.1.0
+# Author: elvee
+# Version: 0.1.2
 # Usage: 10-prompt-test.sh TARGET [OPTIONS]
 
 # ASCII Art
 print_ascii_art() {
   cat <<'EOF'
-╔═╗┌┬┐┌─┐  ┌─┐┌─┐┌┐┌┌─┐┌┬┐
-║ ║ │ ├─┘  │  │ │││││ │ │
-╚═┘ ┴ ┴    └─┘└─┘┘└┘└─┘ ┴
+      ██╗ ██████╗     ████████╗███████╗███████╗████████╗      
+     ███║██╔═████╗    ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝      
+     ╚██║██║██╔██║       ██║   █████╗  ███████╗   ██║         
+      ██║████╔╝██║       ██║   ██╔══╝  ╚════██║   ██║         
+      ██║╚██████╔╝       ██║   ███████╗███████║   ██║         
+      ╚═╝ ╚═════╝        ╚═╝   ╚══════╝╚══════╝   ╚═╝         
+                                                             
+██████╗ ██████╗  ██████╗ ███╗   ███╗██████╗ ████████╗███████╗
+██╔══██╗██╔══██╗██╔═══██╗████╗ ████║██╔══██╗╚══██╔══╝██╔════╝
+██████╔╝██████╔╝██║   ██║██╔████╔██║██████╔╝   ██║   ███████╗
+██╔═══╝ ██╔══██╗██║   ██║██║╚██╔╝██║██╔═══╝    ██║   ╚════██║
+██║     ██║  ██║╚██████╔╝██║ ╚═╝ ██║██║        ██║   ███████║
+╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚═╝        ╚═╝   ╚══════╝
+                                                                                                                                
 EOF
 }
 
@@ -80,9 +91,9 @@ warn_on_high_vram() {
   local vram_pct
   vram_pct="$(
     rocm-smi 2>/dev/null \
-      | awk '/VRAM%/ {header=1; next} header && NF >= 10 {print $(NF-1); exit}' \
+      | awk '/VRAM%/ {header=1; next} header && NF >= 10 {v=$(NF-1)} END {print v}' \
       | tr -d '%'
-  )"
+  )" || true
   if [[ "${vram_pct}" =~ ^[0-9]+$ ]] && (( vram_pct > VRAM_WARN_PCT )); then
     echo "Warning: GPU VRAM already ${vram_pct}% used before the run." >&2
     echo "  Other GPU containers (chatterbox, whisper, ...) can force the VLM" >&2
