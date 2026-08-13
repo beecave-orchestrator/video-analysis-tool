@@ -3,19 +3,21 @@ name = "video-nsfw-tagger"
 version = "0.1.0"
 description = "Local, offline, privacy-first NSFW video analysis CLI"
 readme = "README.md"
-requires-python = "~=3.12"
+requires-python = ">=3.12,<3.14"
 license = { file = "LICENSE" }
 dependencies = [
     "typer[all]>=0.27.0",
     "rich>=15.0.0",
-    # ROCm torch wheels; install via:
-    #   pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+    # ROCm torch wheels are scoped to the pytorch-rocm source below so PDM
+    # never resolves the CUDA-only PyPI builds. See [[tool.pdm.source]].
     "torch>=2.5",
+    "torchvision>=0.19",
     "transformers>=4.40,<5",
     "pillow",
     "safetensors",
     "ollama>=0.4.0",
     "pyyaml>=6.0",
+    "python-dotenv>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +42,15 @@ where = ["src"]
 
 [tool.pdm]
 distribution = false
+
+# ROCm torch wheels (AMD GPU). Scoped so only torch/torchvision resolve from
+# this index; all other deps come from PyPI. This prevents PDM from pulling
+# the CUDA-only PyPI torch builds on `pdm install`/`pdm lock`.
+[[tool.pdm.source]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.4"
+include_packages = ["torch", "torchvision", "pytorch-triton-rocm"]
+exclude_packages = ["*"]
 
 [tool.pdm.scripts]
 lint = "ruff check ."
