@@ -22,6 +22,8 @@ DEFAULT_PROMPTS_DIR="experiments/prompts"
 DEFAULT_RESULTS_DIR="experiments/results"
 DEFAULT_CACHE_DIR="experiments/cache"
 DEFAULT_DB="experiments/results/index.db"
+DEFAULT_VLM_TIMEOUT=600
+VRAM_WARN_PCT=60
 
 # Function to display help
 show_help() {
@@ -39,6 +41,7 @@ Options:
   --prompts-dir DIR         Directory with prompt files (default: ${DEFAULT_PROMPTS_DIR})
   --results-dir DIR         Root for run results (default: ${DEFAULT_RESULTS_DIR})
   --cache-dir DIR           Frame + ViT score cache (default: ${DEFAULT_CACHE_DIR})
+  --vlm-timeout SEC         Per-caption timeout; cold model load counts (default: ${DEFAULT_VLM_TIMEOUT})
   --extra-opts STRING       Additional quoted options for vnt scan
   -h, --help                Show this help message
 
@@ -68,6 +71,25 @@ resolve_vnt_cmd() {
   fi
 }
 
+# Warn when the GPU already holds a lot of VRAM (the VLM may be partially
+# offloaded to CPU, which turns ~40 s captions into multi-minute timeouts).
+warn_on_high_vram() {
+  if ! command -v rocm-smi &>/dev/null; then
+    return 0
+  fi
+  local vram_pct
+  vram_pct="$(
+    rocm-smi 2>/dev/null \
+      | awk '/VRAM%/ {header=1; next} header && NF >= 10 {print $(NF-1); exit}' \
+      | tr -d '%'
+  )"
+  if [[ "${vram_pct}" =~ ^[0-9]+$ ]] && (( vram_pct > VRAM_WARN_PCT )); then
+    echo "Warning: GPU VRAM already ${vram_pct}% used before the run." >&2
+    echo "  Other GPU containers (chatterbox, whisper, ...) can force the VLM" >&2
+    echo "  partially onto CPU and cause caption timeouts. Consider stopping them." >&2
+  fi
+}
+
 # Extract the "## Prompt" section from a markdown prompt file.
 # Falls back to the full file if the section is absent.
 extract_prompt() {
@@ -85,6 +107,7 @@ main() {
   local prompts_dir="${DEFAULT_PROMPTS_DIR}"
   local results_dir="${DEFAULT_RESULTS_DIR}"
   local cache_dir="${DEFAULT_CACHE_DIR}"
+  local vlm_timeout="${DEFAULT_VLM_TIMEOUT}"
   local extra_opts=""
   local target=""
 
@@ -109,6 +132,10 @@ main() {
         ;;
       --cache-dir)
         cache_dir="$2"
+        shift 2
+        ;;
+      --vlm-timeout)
+        vlm_timeout="$2"
         shift 2
         ;;
       --extra-opts)
@@ -142,6 +169,8 @@ main() {
   if [[ -n "${vnt_cmd}" ]]; then
     echo "Using vnt via: ${vnt_cmd}"
   fi
+
+  warn_on_high_vram
   if [[ ! -e "${target}" ]]; then
     error_exit "TARGET does not exist: ${target}"
   fi
@@ -181,7 +210,10 @@ main() {
     error_exit "No prompt files (*.md) found in ${prompts_dir}"
   fi
 
+  local prompt_count="${#prompt_files[@]}"
+  local prompt_idx=0
   for prompt_file in "${prompt_files[@]}"; do
+    prompt_idx=$((prompt_idx + 1))
     local prompt_id
     prompt_id="$(basename "${prompt_file}" .md)"
     local prompt_out_dir="${run_dir}/${prompt_id}"
@@ -197,18 +229,27 @@ main() {
     printf '%s\n' "${prompt_text}" > "${prompt_tmp}"
 
     echo ""
-    echo "=== Running prompt: ${prompt_id} ==="
+    echo "=== Running prompt ${prompt_idx}/${prompt_count}: ${prompt_id} ==="
+
+    # Keep the VLM in VRAM between prompts; the last run unloads it.
+    local keep_flag="--keep-vlm-loaded"
+    if (( prompt_idx == prompt_count )); then
+      keep_flag=""
+    fi
 
     # shellcheck disable=SC2086
     ${vnt_cmd} scan "${target}" \
       --vlm \
       --vlm-top-k "${top_k}" \
       --fps "${fps}" \
+      --vlm-timeout "${vlm_timeout}" \
       --frame-cache "${cache_dir}" \
+      --unload-vit-before-vlm \
       --vlm-prompt-file "${prompt_tmp}" \
       --vlm-prompt-id "${prompt_id}" \
       --db "${run_db}" \
       --verbose \
+      ${keep_flag} \
       ${extra_opts}
 
     # Copy sidecar(s) into run dir before the next prompt overwrites them
