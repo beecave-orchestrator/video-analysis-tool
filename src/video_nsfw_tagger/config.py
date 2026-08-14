@@ -49,7 +49,7 @@ def load_hf_token() -> str | None:
 
 
 DEFAULT_OLLAMA_MODEL = (
-    "hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M"
+    "hf.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-abliterated-GGUF:Q4_K_M"
 )
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_THRESHOLD = 0.7

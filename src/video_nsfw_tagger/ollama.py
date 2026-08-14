@@ -17,11 +17,21 @@ from video_nsfw_tagger import config
 
 logger = logging.getLogger(__name__)
 
-# Targeted description prompt — produces richer captions that match more
-# lexicon patterns than a generic "describe this image".
+# Structured-fields prompt — forces a fixed layout (People/Clothing/Acts/
+# Positions/Objects/Setting) that produces concise, direct content from the
+# VLM. Selected as the default after a 10-prompt sweep (2026-08-14) showed it
+# consistently yields accurate, lexicon-matchable captions without relying on
+# the thinking channel, making it ~2x faster than thinking-fallback prompts
+# and less prone to speculative over-tagging. See
+# experiments/results/20260814-220311/report.md for the comparison data.
 DEFAULT_PROMPT = (
-    "Describe what is happening in this image: the people, their actions, "
-    "state of dress, and the setting."
+    "Describe this image using these exact fields, one per line:\n"
+    "People: who and how many\n"
+    "Clothing: what is worn or not worn\n"
+    "Acts: what sexual or intimate acts are happening\n"
+    "Positions: what body positions or sex positions are visible\n"
+    "Objects: any toys, restraints, props, or furniture\n"
+    "Setting: the room or location."
 )
 
 # Generous default: the "Thinking" VLM variants occasionally produce very
