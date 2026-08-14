@@ -1,7 +1,6 @@
 """Aggregate per-prompt sidecars into a comparison report."""
 
 import json
-import re
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable
@@ -10,6 +9,8 @@ from typing import Any
 
 from rich.console import Console
 from rich.table import Table
+
+from video_nsfw_tagger.lexicon import find_matches as _tag_hits
 
 
 def _discover_sidecars(run_dir: Path) -> list[tuple[str, dict[str, Any]]]:
@@ -63,25 +64,6 @@ def _recursive_values(obj: object) -> Iterable[object]:
             yield from _recursive_values(v)
     else:
         yield obj
-
-
-def _tag_hits(text: str, lexicon: dict[str, Iterable[str]]) -> dict[str, list[str]]:
-    """Case-insensitive whole-word matching like ``lexicon.find_matches``.
-
-    Returns:
-        Mapping of tag names to the patterns that matched ``text``.
-    """
-    lowered = text.lower()
-    matches: dict[str, list[str]] = {}
-    for tag, patterns in lexicon.items():
-        hits = [
-            str(pattern)
-            for pattern in patterns
-            if re.search(rf"(?<!\w){re.escape(str(pattern).lower())}(?!\w)", lowered)
-        ]
-        if hits:
-            matches[tag] = hits
-    return matches
 
 
 def _video_captions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -139,6 +121,13 @@ def _compute_metrics(
                 "elapsed_s": caption.get("elapsed_s"),
             })
 
+    tagged_pct = round(tagged_frames / attempted * 100, 2) if attempted else 0.0
+    distinct_count = len(all_tags)
+    # Composite score: reward both tag richness and reliability.
+    # score = distinct_tags × tagged_frames_pct / 100
+    # A prompt with 4 tags at 100% tagged scores 4.0; 6 tags at 50% scores 3.0.
+    score = round(distinct_count * tagged_pct / 100, 2)
+
     return {
         "prompt_id": prompt_id,
         "videos": len(sidecars),
@@ -146,11 +135,10 @@ def _compute_metrics(
         "succeeded": succeeded,
         "failures": failures,
         "tagged_frames": tagged_frames,
-        "tagged_frames_pct": (
-            round(tagged_frames / attempted * 100, 2) if attempted else 0.0
-        ),
+        "tagged_frames_pct": tagged_pct,
         "distinct_tags": sorted(all_tags),
-        "distinct_tags_count": len(all_tags),
+        "distinct_tags_count": distinct_count,
+        "score": score,
         "pattern_counts": dict(pattern_counts),
         "avg_caption_length": (round(statistics.mean(lengths), 1) if lengths else 0.0),
         "median_caption_length": (
@@ -189,14 +177,18 @@ def collect(
 
 
 def _rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sort rows by a composite score: distinct tags, then % tagged frames.
+    """Sort rows by composite score, then distinct tags, then speed.
+
+    Primary key is ``score`` (distinct tags × tagged% / 100), which rewards
+    both tag richness and reliability. Ties break on distinct tag count,
+    then on faster average caption time.
 
     Returns:
         Rows sorted descending by the composite score.
     """
     return sorted(
         rows,
-        key=lambda r: (r["distinct_tags_count"], r["tagged_frames_pct"]),
+        key=lambda r: (r["score"], r["distinct_tags_count"], -r["avg_elapsed_s"]),
         reverse=True,
     )
 
@@ -216,6 +208,7 @@ def print_table(
     table.add_column("Failures", justify="right")
     table.add_column("Tagged %", justify="right")
     table.add_column("Distinct tags", justify="right")
+    table.add_column("Score", justify="right")
     for tag in lexicon:
         table.add_column(tag, justify="right")
     table.add_column("Avg chars", justify="right")
@@ -232,6 +225,7 @@ def print_table(
             str(row["failures"]),
             f"{row['tagged_frames_pct']:.1f}",
             str(row["distinct_tags_count"]),
+            f"{row['score']:.2f}",
             *(str(tag_counts.get(tag, 0)) for tag in lexicon),
             f"{row['avg_caption_length']:.0f}",
             f"{row['avg_elapsed_s']:.1f}",
@@ -253,14 +247,18 @@ def _markdown_report(
         "",
         "## Summary",
         "",
-        "| rank | prompt_id | attempts | success | failures | tagged% | distinct |",
-        "|---:|---|---:|---:|---:|---:|---:|",
+        (
+            "| rank | prompt_id | attempts | success | failures "
+            "| tagged% | distinct | score |"
+        ),
+        "|---:|---|---:|---:|---:|---:|---:|---:|",
     ]
     for rank, row in enumerate(_rank(rows), 1):
         lines.append(
             f"| {rank} | {row['prompt_id']} | {row['attempted']} | "
             f"{row['succeeded']} | {row['failures']} | "
-            f"{row['tagged_frames_pct']:.1f} | {row['distinct_tags_count']} |"
+            f"{row['tagged_frames_pct']:.1f} | {row['distinct_tags_count']} | "
+            f"{row['score']:.2f} |"
         )
     lines.append("")
     lines.append("## Per-tag pattern counts")

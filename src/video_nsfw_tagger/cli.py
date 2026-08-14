@@ -310,7 +310,7 @@ def scan(
                         )
                         start = time.monotonic()
                         try:
-                            caption = captioner.caption_frame(path)
+                            caption, thinking = captioner.caption_frame(path)
                         except Exception as exc:
                             failures += 1
                             console.print(
@@ -319,14 +319,17 @@ def scan(
                             )
                             continue
                         matches = lexicon_mod.find_matches(caption, lexicon_data)
-                        captions.append({
+                        entry: dict = {
                             "frame": idx,
                             "timestamp_s": ts,
                             "caption": caption,
                             "tags": sorted(matches),
                             "matches": matches,
                             "elapsed_s": round(time.monotonic() - start, 2),
-                        })
+                        }
+                        if thinking:
+                            entry["thinking"] = thinking
+                        captions.append(entry)
                         preview = caption.strip()[:80]
                         vlog(
                             f"Caption {i}/{len(selected)} done "

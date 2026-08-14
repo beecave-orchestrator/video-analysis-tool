@@ -32,6 +32,10 @@ KEEP_ALIVE = "10m"
 # (frame_index, timestamp_s, path)
 FrameRef = tuple[int, float, Path]
 
+# (content, thinking) — content is the visible reply; thinking is the
+# hidden reasoning from Thinking-variant models (empty string when absent).
+CaptionResult = tuple[str, str]
+
 
 def select_flagged_frames(
     frames: Sequence[FrameRef],
@@ -108,11 +112,12 @@ class OllamaCaptioner:
                 f"Pull it with: ollama pull {self.model}"
             )
 
-    def _chat_once(self, image_path: Path) -> str:
-        """Send a single caption request and return the raw reply.
+    def _chat_once(self, image_path: Path) -> CaptionResult:
+        """Send a single caption request and return content + thinking.
 
         Returns:
-            The model's reply text, stripped.
+            ``(content, thinking)`` — both stripped. ``thinking`` is ``""``
+            when the model didn't produce a reasoning channel.
         """
         response = self.client.chat(
             model=self.model,
@@ -126,22 +131,38 @@ class OllamaCaptioner:
             think=self.think,
             keep_alive=self.keep_alive,
         )
-        return response.message.content.strip()
+        content = (response.message.content or "").strip()
+        thinking = getattr(response.message, "thinking", None) or ""
+        thinking = thinking.strip()
+        return content, thinking
 
-    def caption_frame(self, image_path: Path) -> str:
+    def caption_frame(self, image_path: Path) -> CaptionResult:
         """Caption a single frame image, retrying failed requests.
 
         Args:
             image_path: Path to a PNG/JPEG frame.
 
         Returns:
-            Caption text; the last request error is re-raised when all
-            attempts fail.
+            ``(text, thinking)`` — ``text`` is the visible content, or
+            the thinking text when content is empty (Thinking-variant
+            models with ``think=False`` may put all output in the
+            reasoning channel). The last request error is re-raised
+            when all attempts fail.
         """
         last_exc: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
-                return self._chat_once(image_path)
+                content, thinking = self._chat_once(image_path)
+                text = content or thinking
+                if not text and "thinking" in self.model.lower():
+                    logger.warning(
+                        "Empty caption from Thinking-variant model %s "
+                        "for %s; consider --vlm-think to capture the "
+                        "reasoning channel.",
+                        self.model,
+                        image_path,
+                    )
+                return text, thinking
             except Exception as exc:
                 last_exc = exc
                 if attempt >= self.retries:
@@ -162,19 +183,23 @@ class OllamaCaptioner:
             frames: Frame refs as ``(index, timestamp_s, path)``.
 
         Returns:
-            List of ``{frame, timestamp_s, caption}`` dictionaries.
+            List of ``{frame, timestamp_s, caption, thinking?, elapsed_s}``
+            dictionaries. ``thinking`` is included only when non-empty.
         """
         captions: list[dict] = []
         for idx, timestamp, path in frames:
             logger.info("Captioning frame %s (%s)", idx, path)
             start = time.monotonic()
-            caption = self.caption_frame(path)
-            captions.append({
+            text, thinking = self.caption_frame(path)
+            entry: dict = {
                 "frame": idx,
                 "timestamp_s": timestamp,
-                "caption": caption,
+                "caption": text,
                 "elapsed_s": round(time.monotonic() - start, 2),
-            })
+            }
+            if thinking:
+                entry["thinking"] = thinking
+            captions.append(entry)
         return captions
 
     def unload(self) -> None:
