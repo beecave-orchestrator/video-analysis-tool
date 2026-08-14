@@ -24,12 +24,18 @@ FLAGGED = [
 ]
 
 
-def _mock_client(model_names=(config.DEFAULT_OLLAMA_MODEL,), caption="a caption"):
+def _mock_client(
+    model_names=(config.DEFAULT_OLLAMA_MODEL,),
+    caption="a caption",
+    thinking="",
+):
     client = MagicMock()
     client.list.return_value = SimpleNamespace(
         models=[SimpleNamespace(model=m) for m in model_names]
     )
-    client.chat.return_value = SimpleNamespace(message=SimpleNamespace(content=caption))
+    client.chat.return_value = SimpleNamespace(
+        message=SimpleNamespace(content=caption, thinking=thinking)
+    )
     return client
 
 
@@ -88,8 +94,9 @@ def test_check_available_fails_when_server_unreachable():
 def test_caption_frame_sends_prompt_and_image():
     captioner = OllamaCaptioner(model="qwen3-vl:4b")
     captioner.client = _mock_client(caption="  some caption  ")
-    result = captioner.caption_frame(Path("/tmp/f1.png"))
-    assert result == "some caption"
+    text, thinking = captioner.caption_frame(Path("/tmp/f1.png"))
+    assert text == "some caption"
+    assert thinking == ""
     kwargs = captioner.client.chat.call_args.kwargs
     assert kwargs["model"] == "qwen3-vl:4b"
     assert kwargs["messages"][0]["images"] == ["/tmp/f1.png"]
@@ -105,12 +112,50 @@ def test_caption_frame_passes_think_when_enabled():
     assert captioner.client.chat.call_args.kwargs["think"] is True
 
 
+def test_caption_frame_captures_thinking_channel():
+    """Thinking text is returned alongside content when present."""
+    captioner = OllamaCaptioner()
+    captioner.client = _mock_client(
+        caption="visible reply", thinking="hidden reasoning"
+    )
+    text, thinking = captioner.caption_frame(Path("/tmp/f1.png"))
+    assert text == "visible reply"
+    assert thinking == "hidden reasoning"
+
+
+def test_caption_frame_falls_back_to_thinking_when_content_empty():
+    """When content is empty, thinking text is used as the caption."""
+    captioner = OllamaCaptioner()
+    captioner.client = _mock_client(caption="", thinking="the real output is here")
+    text, thinking = captioner.caption_frame(Path("/tmp/f1.png"))
+    assert text == "the real output is here"
+    assert thinking == "the real output is here"
+
+
+def test_caption_frames_includes_thinking_field_when_present():
+    """The caption dict includes 'thinking' only when non-empty."""
+    captioner = OllamaCaptioner()
+    captioner.client = _mock_client(caption="content", thinking="reasoning")
+    captions = captioner.caption_frames([(1, 0.0, Path("/tmp/f1.png"))])
+    assert captions[0]["caption"] == "content"
+    assert captions[0]["thinking"] == "reasoning"
+
+
+def test_caption_frames_omits_thinking_field_when_empty():
+    """The caption dict omits 'thinking' when it's empty."""
+    captioner = OllamaCaptioner()
+    captioner.client = _mock_client(caption="content", thinking="")
+    captions = captioner.caption_frames([(1, 0.0, Path("/tmp/f1.png"))])
+    assert "thinking" not in captions[0]
+
+
 def test_caption_frame_retries_after_timeout():
     captioner = OllamaCaptioner(retries=1)
     client = _mock_client()
     client.chat.side_effect = [TimeoutError("timed out"), client.chat.return_value]
     captioner.client = client
-    assert captioner.caption_frame(Path("/tmp/f1.png")) == "a caption"
+    text, _ = captioner.caption_frame(Path("/tmp/f1.png"))
+    assert text == "a caption"
     assert client.chat.call_count == 2
 
 
@@ -143,6 +188,8 @@ def test_caption_frames_structure():
     assert [c["timestamp_s"] for c in captions] == [1.0, 3.0]
     assert [c["caption"] for c in captions] == ["a caption", "a caption"]
     assert all(c["elapsed_s"] >= 0 for c in captions)
+    # No thinking field when thinking is empty.
+    assert "thinking" not in captions[0]
     # Gating check: exactly the selected frames were captioned, no others.
     assert captioner.client.chat.call_count == 2
 
@@ -186,7 +233,7 @@ def test_ollama_integration_caption_real_frame(tmp_path):
 
         captioner = OllamaCaptioner()
         captioner.check_available()
-        caption = captioner.caption_frame(frame)
+        text, thinking = captioner.caption_frame(frame)
     except RuntimeError as exc:
         pytest.skip(f"Ollama unavailable: {exc}")
-    assert isinstance(caption, str) and caption
+    assert isinstance(text, str) and text

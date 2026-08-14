@@ -76,3 +76,80 @@ def test_collect_handles_json_caption_output(tmp_path):
         run_dir, {"nudity": ["naked"], "toys_objects": ["vibrator"]}
     )
     assert rows[0]["distinct_tags_count"] == 2
+
+
+def test_compute_metrics_includes_score(tmp_path):
+    """Score = distinct_tags_count * tagged_frames_pct / 100."""
+    run_dir = tmp_path / "run"
+    p1 = run_dir / "01_a"
+    p1.mkdir(parents=True)
+    p1.joinpath("v.nsfw.json").write_text(
+        json.dumps(
+            _make_sidecar(
+                "01_a",
+                [
+                    {"frame": 1, "caption": "A naked person."},
+                    {"frame": 2, "caption": "An intimate scene."},
+                ],
+            )
+        )
+    )
+    rows = prompt_report.collect(run_dir, LEXICON)
+    # 2 tags (nudity + intimacy), 100% tagged → score = 2.0
+    assert rows[0]["score"] == 2.0
+
+
+def test_rank_sorts_by_score_desc(tmp_path):
+    """Higher score ranks first; 100% tagged with more tags beats 50% with more."""
+    run_dir = tmp_path / "run"
+    p_reliable = run_dir / "01_reliable"
+    p_reliable.mkdir(parents=True)
+    p_reliable.joinpath("v.nsfw.json").write_text(
+        json.dumps(
+            _make_sidecar(
+                "01_reliable",
+                [
+                    {"frame": 1, "caption": "A naked intimate scene with a vibrator."},
+                    {"frame": 2, "caption": "Another naked intimate scene."},
+                ],
+            )
+        )
+    )
+    p_flaky = run_dir / "02_flaky"
+    p_flaky.mkdir(parents=True)
+    p_flaky.joinpath("v.nsfw.json").write_text(
+        json.dumps(
+            _make_sidecar(
+                "02_flaky",
+                [
+                    {"frame": 1, "caption": "A naked intimate scene with a vibrator."},
+                    {"frame": 2, "caption": ""},
+                ],
+            )
+        )
+    )
+    rows = prompt_report.collect(run_dir, LEXICON)
+    ranked = prompt_report._rank(rows)
+    # reliable: 3 tags × 100% = 3.0; flaky: 3 tags × 50% = 1.5
+    assert ranked[0]["prompt_id"] == "01_reliable"
+    assert ranked[0]["score"] == 3.0
+    assert ranked[1]["prompt_id"] == "02_flaky"
+    assert ranked[1]["score"] == 1.5
+
+
+def test_markdown_report_includes_score_column(tmp_path):
+    """The markdown summary table has a score column."""
+    run_dir = tmp_path / "run"
+    p1 = run_dir / "01_a"
+    p1.mkdir(parents=True)
+    p1.joinpath("v.nsfw.json").write_text(
+        json.dumps(
+            _make_sidecar(
+                "01_a", [{"frame": 1, "timestamp_s": 1.0, "caption": "A naked person."}]
+            )
+        )
+    )
+    rows = prompt_report.collect(run_dir, LEXICON)
+    md = prompt_report._markdown_report(rows, LEXICON)
+    assert "score" in md
+    assert "| score |" in md
