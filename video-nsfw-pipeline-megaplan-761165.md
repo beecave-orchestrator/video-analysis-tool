@@ -5,7 +5,7 @@ Build a local, offline, privacy-first CLI tool that samples video frames with ff
 - **Source plan:** `2026-07-09-video-nsfw-analysis-pipeline.md` (workspace root)
 - **Feasibility:** verified in prior session (see "Feasibility findings" below)
 - **Development constraint:** Phase A was developed on an Intel MacBook (CPU only). Phase B environment setup and validation completed on the AMD RX 6600 / ROCm server. The project is now **ROCm-only** — the Mac dev constraint no longer applies.
-- **Status:** Phase A complete, Phase B code implemented and verified end-to-end on real video (2026-08-11); default VLM switched to abliterated Qwen3-VL-4B; lexicon hardened (word-boundary matching, expanded `acts.yaml`). Remaining: RX 6600 throughput benchmark documented in README
+- **Status:** Phase A complete, Phase B code implemented and verified end-to-end on real video (2026-08-11); default VLM switched to abliterated Qwen3-VL-4B; lexicon hardened (word-boundary matching, expanded `acts.yaml`). Phase B-experiment: 10-prompt sweep infrastructure built and first run completed (2026-08-13); three validation-driven code fixes applied (negation-aware lexicon, thinking-channel capture, composite ranking). Remaining: RX 6600 throughput benchmark documented in README; re-run prompt sweep with fixes to confirm ranking
 
 ---
 
@@ -43,7 +43,36 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 - [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
 - [x] Rich progress for VLM stage: per-frame caption progress ("captioning frame 3/7") — at ~11s/caption a bare per-video spinner is too opaque. Implemented in `cli.py` ("Captioning {video} frame {i}/{n}").
 
-### Scope changes from original plan
+### Phase B-experiment — Prompt sweep + validation fixes: ✅ Complete (2026-08-14)
+
+**Done 2026-08-13 (experiment infrastructure + first run):**
+
+- [x] `scripts/10-prompt-test.sh` — repeatable 10-prompt VLM experiment driver: runs `vnt scan` with each prompt from `experiments/prompts/*.md`, reuses `experiments/cache/` for frame/ViT score caching, copies per-prompt sidecars into timestamped run dirs, keeps VLM loaded between prompts, generates `report.json` + `report.md` via `vnt prompt-report`
+- [x] `src/video_nsfw_tagger/prompt_report.py` — prompt-sweep aggregation module: discovers per-prompt sidecars, computes metrics (succeeded/failed, tagged%, distinct tags, per-tag pattern counts, avg caption length/elapsed), produces Rich console table + Markdown report
+- [x] `vnt prompt-report` CLI command — runs `prompt_report.collect()` + `print_table()` + `write_reports()` on a run directory
+- [x] `experiments/prompts/` — 10 candidate prompt definitions (baseline, minimal, anatomical, explicit_vocab, structured_fields, lexicon_aware, json_output, roleplay_directive, step_by_step, negative_space)
+- [x] First sweep run (`experiments/results/20260813-230738`): 10 prompts × 2 captions on `watch/fucked-in-her-favorite-hole_sample.mp4` (4-min sample, `--top-k 2`). Frame cache hit on all prompts after first. ~18 min total. Caption times 27–48s each.
+
+**First run findings (validated 2026-08-14):**
+
+- `05_structured_fields` and `07_json_output` are the genuine top performers: 100% usable captions, 4 distinct tags each, fastest (27s and 33s avg), accurate tags (vaginal_sex, positions_actions, fetish_specific, masturbation/intimacy)
+- `10_negative_space` "won" on raw distinct_tags (6) but all 6 were **false positives from negation backfire** — the model listed what is *not* happening ("No kissing:", "No bondage:", "not exposed") and every negated term was counted as a hit by the lexicon matcher
+- `04_explicit_vocab` and `06_lexicon_aware` produced 0/2 usable captions — the Thinking-variant model with `think=False` dumps output into the thinking channel and returns empty `message.content`; the `ollama.py` client only read `content`, discarding the thinking text
+- `facial` pattern in `body_fluids`/`orgasm_ejaculation` matched "facial features" (a tattoo description) — polysemy false positive not caught by negation fix
+
+**Done 2026-08-14 (validation-driven code fixes):**
+
+- [x] **Negation-aware lexicon matching** (`lexicon.py`): `find_matches()` now suppresses a match when a negation cue (`no`, `not`, `without`, `isn't`, `aren't`, `wasn't`, `weren't`, `don't`, `doesn't`, `didn't`, `never`, `cannot`, `can't`, `absence`, `lack`, `none`) directly precedes it within a 30-char window. Handles "No kissing:", "not exposed", "No bondage:" patterns. `prompt_report._tag_hits` deduplicated — now imports `find_matches` directly from `lexicon` instead of maintaining a copy. 4 new tests in `test_lexicon.py`.
+- [x] **Thinking-channel capture** (`ollama.py`): `_chat_once()` now returns `(content, thinking)` tuple; `caption_frame()` returns `(text, thinking)` where `text` is content or thinking fallback when content is empty. `caption_frames()` and `cli.py` store `thinking` as a separate field in the caption dict when non-empty. Warning logged when a Thinking-variant model produces empty content+thinking, suggesting `--vlm-think`. Sidecar schema addition is backward-compatible (`thinking` field is optional/omitted when empty). 5 new tests in `test_ollama.py`.
+- [x] **Composite score ranking** (`prompt_report.py`): `_compute_metrics` now includes `score = distinct_tags_count × tagged_frames_pct / 100`. `_rank()` sorts by `(score, distinct_tags_count, -avg_elapsed_s)`. Score column added to both Rich console table and Markdown report. 3 new tests in `test_prompt_report.py`.
+- [x] **`facial` pattern removed** from `acts.yaml`: removed from both `orgasm_ejaculation` and `body_fluids` — too polysemous ("facial features", "facial expression"). Unambiguous patterns like `cum on face`, `cumshot`, `creampie` remain. 449 → 447 patterns.
+- [x] All 47 tests pass (44 non-integration + 3 integration); ruff lint + format clean.
+
+**Pending:**
+
+- [ ] Re-run prompt sweep with the three fixes to confirm `05_structured_fields` / `07_json_output` surface as top-ranked and `10_negative_space` drops
+- [ ] Set `05_structured_fields` as the new default prompt in `ollama.py.DEFAULT_PROMPT` (after re-run confirmation)
+- [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
 
 | # | Original decision | Changed to | Reason |
 | --- | ------------------- | ------------ | -------- |
@@ -54,6 +83,10 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | — | VLM backend in `vlm.py` | **Separate `ollama.py` module**; `vlm.py` stays as placeholder | `vlm.py` remains reserved for a future transformers-based VLM backend. `ollama.py` is the first concrete backend (Ollama HTTP API). Later, `vlm.py` can become a dispatcher routing to `ollama.py` or a transformers backend. Keeps backends pluggable without entangling Ollama-specific code with the transformers placeholder. |
 | 6b | Default VLM: `qwen3-vl:4b` | `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` | `qwen3-vl:4b` was validated during Phase B but never actually pulled into the shared `~/.ollama` store; the abliterated Huihui Qwen3-VL-4B (Q4_K_M, 3.0 GB) is what's deployed. Abliteration also mitigates NSFW refusals. `--vlm` works out of the box now (done 2026-08-11). |
 | 7b | Lexicon matching: case-insensitive substring | **Word-boundary regex** (`(?<!\w)…(?!\w)`) | Substring matching caused false positives (`ass` in "glasses", `pet` in "carpet"). Switch plus pruning of ~70 generic words in `acts.yaml` reduced adversarial-sentence false positives from 4 tags to 0 (done 2026-08-11). |
+| 7c | Lexicon matching: no negation handling | **Negation-aware suppression** | Negative-space prompts ("No kissing:", "not exposed") caused false positives: negated terms counted as hits. `find_matches()` now checks a 30-char prefix for trailing negation cues and suppresses the match (done 2026-08-14). |
+| 7d | `facial` pattern in `body_fluids`/`orgasm_ejaculation` | **Removed** | "facial features" / "facial expression" in non-sexual contexts triggered false positives. Unambiguous patterns (`cum on face`, `cumshot`, `creampie`) remain (done 2026-08-14). |
+| 12b | VLM caption: only `message.content` read | **Thinking channel captured separately** | Thinking-variant models with `think=False` put output in `message.thinking`, returning empty `content`. `_chat_once()` now reads both; `caption_frame()` falls back to thinking when content is empty; `thinking` stored as separate sidecar field (done 2026-08-14). |
+| — | Prompt ranking: raw `distinct_tags_count` | **Composite score** (`distinct_tags × tagged% / 100`) | Raw tag count ranked `10_negative_space` #1 despite all tags being negation false positives. Composite score rewards both tag richness and reliability; score column added to Rich + Markdown reports (done 2026-08-14). |
 
 ### Environment details (ROCm server)
 
@@ -89,6 +122,9 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | 16 | Mid-scan VLM failure | **Degrade, don't abort.** If captioning fails on video N of a batch (timeout/OOM/crash), log a warning, write the sidecar with ViT results and `vlm: null`, and continue to the next video. Decision #13 fail-fast applies only to the pre-scan availability check — ViT results remain valuable even when the VLM stage fails. |
 | 17 | VLM request timeout | **120s default per caption request** on `ollama.Client`. At ~11s/caption a hung request without a timeout stalls a batch scan indefinitely. |
 | 18 | Re-scan idempotency | **Non-VLM re-scan preserves existing VLM data.** Upsert only touches columns the current scan produced: a scan without `--vlm` leaves `vlm_model`/`act_tags` (DB) and the sidecar `vlm` block untouched; a scan with `--vlm` overwrites them. Prevents accidental clobbering of expensive caption results. |
+| 19 | Negation handling in lexicon | **Suppress matches preceded by negation cues.** When a negation word (`no`, `not`, `without`, …) directly precedes a pattern match within a 30-char window, the match is suppressed. Prevents false positives from negative-space prompts without requiring full NLP. |
+| 20 | Thinking-channel capture | **Store `thinking` separately; fall back to it when `content` is empty.** The sidecar `caption` field contains the visible content (or thinking text when content is empty); `thinking` is stored as a separate optional field for human review. Matching always uses `caption`. |
+| 21 | Prompt-sweep ranking | **Composite score: `distinct_tags × tagged_frames_pct / 100`.** Rewards both tag richness and reliability. Ties break on distinct tag count, then faster average caption time. Score shown as a column in both Rich and Markdown reports. |
 
 ## Objective
 
@@ -127,15 +163,24 @@ src/video_nsfw_tagger/
 ├── db.py             # sqlite3 stdlib: schema init, upsert, query helpers
 ├── vlm.py            # Phase B placeholder (future transformers backend; untouched in this iteration)
 ├── ollama.py         # Phase B: Ollama HTTP API captioner (abliterated Qwen3-VL-4B default) — first concrete VLM backend
-└── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags (word-boundary matching)
+├── lexicon.py        # Phase B: load lexicon YAML/JSON, caption → act_tags (word-boundary + negation-aware matching)
+├── prompt_report.py  # Phase B-experiment: prompt-sweep aggregation, composite score ranking, Rich + Markdown reports
+└── vlm.py            # Phase B placeholder (future transformers backend; untouched)
 lexicon/
-└── acts.yaml         # editable keyword/phrase → tag mapping (19 tags, 449 patterns)
+└── acts.yaml         # editable keyword/phrase → tag mapping (19 tags, 447 patterns)
+experiments/
+├── prompts/          # 10 candidate prompt definitions for VLM sweep
+├── cache/            # frame + ViT score cache (reused across prompt runs)
+└── results/          # timestamped run directories with per-prompt sidecars + reports
+scripts/
+└── 10-prompt-test.sh # repeatable multi-prompt VLM experiment driver
 tests/
 ├── test_aggregate.py
 ├── test_sidecar.py
 ├── test_db.py
-├── test_lexicon.py   # Phase B (incl. word-boundary regression test)
-├── test_ollama.py    # Phase B (mocked ollama.Client + optional integration)
+├── test_lexicon.py   # Phase B (incl. word-boundary + negation-awareness tests)
+├── test_ollama.py    # Phase B (mocked ollama.Client + thinking-channel + optional integration)
+├── test_prompt_report.py  # Phase B-experiment (metrics, score, ranking, markdown)
 └── fixtures/         # synthetic ffmpeg-generated clips (no real content)
 pyproject.toml        # setuptools backend, src layout; [project.scripts] vnt = "video_nsfw_tagger.cli:app"; [tool.pdm.scripts] retained for lint/test shortcuts
 README.md
@@ -236,7 +281,7 @@ markers = [
     "backend": "ollama",
     "model": "qwen3-vl:4b",
     "host": "http://localhost:11434",
-    "captions": [{"frame": 7, "caption": "..."}],
+    "captions": [{"frame": 7, "caption": "...", "thinking": "... (optional, Thinking-variant models only)"}],
     "act_tags": ["tag1", "tag2"]
   },
   "created_at": "2026-08-09T19:00:00+02:00"
@@ -339,7 +384,7 @@ vnt report [--db PATH] [--verdict nsfw] [--min-percent 10]
 | ~~ROCm/PyTorch on gfx1032~~ | ~~Medium~~ | ~~High~~ | **Resolved:** torch 2.9.1+rocm6.4 works with `HSA_OVERRIDE_GFX_VERSION=10.3.0`; ViT and VLM both validated on GPU |
 | ~~VLM too heavy for 8 GB VRAM~~ | ~~Medium~~ | ~~Medium~~ | **Resolved:** Ollama manages VRAM; `qwen3-vl:4b` (q4_K_M, 3.3 GB) runs 100% on GPU with 3.5 GB VRAM; 2B fallback available with CPU offload |
 | Ollama VLM refuses NSFW content | Low | Medium | **Mitigated:** default is the abliterated `Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (2026-08-11); 2B fallback is also abliterated. Documented in README. |
-| Act-tag false positives from lexicon | ~~High~~ Low | Low–Med | **Reduced 2026-08-11:** word-boundary matching in `find_tags` + pruning of ~70 generic words in `acts.yaml`; adversarial innocent text yields 0 tags. Lexicon remains deterministic, auditable, editable; captions stored alongside tags for user review |
+| Act-tag false positives from lexicon | ~~High~~ Low | Low–Med | **Reduced 2026-08-11:** word-boundary matching in `find_tags` + pruning of ~70 generic words in `acts.yaml`; adversarial innocent text yields 0 tags. **Further reduced 2026-08-14:** negation-aware matching suppresses false positives from negative-space prompts; `facial` pattern removed (polysemy). Lexicon remains deterministic, auditable, editable; captions stored alongside tags for user review |
 | Long-video runtime | Medium | Medium | 1 fps sampling, batch inference, `--max-duration`, GPU path |
 | Model bias / accuracy unknown on real corpora | Medium | Medium | Only smoke-tested; user tunes `--threshold` on own samples; document limitation |
 
