@@ -5,7 +5,7 @@ Build a local, offline, privacy-first CLI tool that samples video frames with ff
 - **Source plan:** `2026-07-09-video-nsfw-analysis-pipeline.md` (workspace root)
 - **Feasibility:** verified in prior session (see "Feasibility findings" below)
 - **Development constraint:** Phase A was developed on an Intel MacBook (CPU only). Phase B environment setup and validation completed on the AMD RX 6600 / ROCm server. The project is now **ROCm-only** — the Mac dev constraint no longer applies.
-- **Status:** Phase A complete, Phase B code implemented and verified end-to-end on real video (2026-08-11); default VLM switched to abliterated Qwen3-VL-4B; lexicon hardened (word-boundary matching, expanded `acts.yaml`). Phase B-experiment: 10-prompt sweep infrastructure built and first run completed (2026-08-13); three validation-driven code fixes applied (negation-aware lexicon, thinking-channel capture, composite ranking). Remaining: RX 6600 throughput benchmark documented in README; re-run prompt sweep with fixes to confirm ranking
+- **Status:** Phase A complete, Phase B code implemented and verified end-to-end on real video (2026-08-11); default VLM switched to Instruct (non-Thinking) abliterated Qwen3-VL-4B (2026-08-14); default prompt switched to 05_structured_fields; lexicon hardened (word-boundary + negation-aware matching, `facial` removed). Phase B-experiment: 10-prompt sweep infrastructure built, two runs completed (2026-08-13/14), three validation-driven code fixes applied. Remaining: RX 6600 throughput benchmark documented in README
 
 ---
 
@@ -70,9 +70,23 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 
 **Pending:**
 
-- [ ] Re-run prompt sweep with the three fixes to confirm `05_structured_fields` / `07_json_output` surface as top-ranked and `10_negative_space` drops
-- [ ] Set `05_structured_fields` as the new default prompt in `ollama.py.DEFAULT_PROMPT` (after re-run confirmation)
+- [x] Re-run prompt sweep with the three fixes to confirm `05_structured_fields` / `07_json_output` surface as top-ranked and `10_negative_space` drops (done 2026-08-14, run `20260814-220311`)
+- [x] Set `05_structured_fields` as the new default prompt in `ollama.py.DEFAULT_PROMPT` (done 2026-08-14)
 - [ ] Throughput benchmark on RX 6600 (ViT path + gated VLM path); document in README
+
+**Re-run results (2026-08-14, `experiments/results/20260814-220311`):**
+
+All three fixes confirmed working. 10/10 prompts produced 100% usable captions (0 failures). But the thinking-channel capture changed the competitive landscape:
+
+- **06_lexicon_aware** ranked #1 by score (14.00, 14 tags) but is **over-tagged** — the thinking channel reasons through each tag category speculatively ("Starting with 'kissing': Is there kissing? Maybe not...") and every mention of a tag name triggers a lexicon match, including uncertain/negative ones. The 14 tags include anal_sex and bdsm_kink which are not present in this vanilla video.
+- **05_structured_fields** dropped to #8 by score (3.00, 3 tags) but is the **only prompt that consistently produces direct content** (not thinking fallback) for both frames. Its 3 tags are accurate. It's 2x faster (114s vs 217s+ for thinking-fallback prompts). Thinking text is still captured separately in the sidecar (3-4KB) for human review.
+- **10_negative_space** dropped from 6 false-positive tags → 4 honest tags (score 4.00, rank #7). Negation fix confirmed.
+- **03/04/06** recovered from 0/2 empty → 2/2 usable via thinking-channel fallback.
+- **Composite score limitation:** the score metric rewards tag count, but thinking-channel tags from speculative reasoning have lower precision. A future precision metric (manual tag accuracy review) would address this. For now, 05 remains the right default — accuracy over raw count.
+
+**Default prompt switched (2026-08-14):** `ollama.py.DEFAULT_PROMPT` changed from the generic "Describe what is happening..." to the 05_structured_fields prompt (People/Clothing/Acts/Positions/Objects/Setting). Selected for accuracy, speed, and consistency — the only prompt that produces direct content from this Thinking-variant model without falling back to the speculative reasoning channel.
+
+**Default VLM model switched (2026-08-14):** `config.DEFAULT_OLLAMA_MODEL` changed from `Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (Thinking variant) to `Qwen3-VL-4B-Instruct-Uncensored-abliterated-GGUF:Q4_K_M` (Instruct variant). The Thinking variant was the root cause of both the empty-caption issue and the speculative over-tagging — with `think=False` it put all output in the reasoning channel. The Instruct variant produces direct content (no thinking channel), is 3x faster (33s vs 114s+ per caption on the same prompt), and is both Uncensored AND abliterated. Smoke test confirmed: 502-char structured caption, 4 accurate tags, 33s elapsed, no thinking field in sidecar.
 
 | # | Original decision | Changed to | Reason |
 | --- | ------------------- | ------------ | -------- |
@@ -82,11 +96,13 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | — | VLM loaded directly via transformers | VLM called via Ollama HTTP API (`localhost:11434`) | Ollama container (`ollama-rocm`) already running with ROCm. Shared model store via bind-mount of `~/.ollama`. Avoids VRAM management complexity. Models: `qwen3-vl:4b` (default), 2B abliterated (fallback). |
 | — | VLM backend in `vlm.py` | **Separate `ollama.py` module**; `vlm.py` stays as placeholder | `vlm.py` remains reserved for a future transformers-based VLM backend. `ollama.py` is the first concrete backend (Ollama HTTP API). Later, `vlm.py` can become a dispatcher routing to `ollama.py` or a transformers backend. Keeps backends pluggable without entangling Ollama-specific code with the transformers placeholder. |
 | 6b | Default VLM: `qwen3-vl:4b` | `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` | `qwen3-vl:4b` was validated during Phase B but never actually pulled into the shared `~/.ollama` store; the abliterated Huihui Qwen3-VL-4B (Q4_K_M, 3.0 GB) is what's deployed. Abliteration also mitigates NSFW refusals. `--vlm` works out of the box now (done 2026-08-11). |
+| 6c | Default VLM: Thinking-abliterated | `hf.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-abliterated-GGUF:Q4_K_M` | The Thinking variant put output in the reasoning channel with `think=False`, causing empty captions and speculative over-tagging when the thinking text was captured. The Instruct variant produces direct content (no thinking channel), is 3x faster (33s vs 114s+ per caption), and is both Uncensored AND abliterated. 2.5 GB Q4_K_M (done 2026-08-14). |
 | 7b | Lexicon matching: case-insensitive substring | **Word-boundary regex** (`(?<!\w)…(?!\w)`) | Substring matching caused false positives (`ass` in "glasses", `pet` in "carpet"). Switch plus pruning of ~70 generic words in `acts.yaml` reduced adversarial-sentence false positives from 4 tags to 0 (done 2026-08-11). |
 | 7c | Lexicon matching: no negation handling | **Negation-aware suppression** | Negative-space prompts ("No kissing:", "not exposed") caused false positives: negated terms counted as hits. `find_matches()` now checks a 30-char prefix for trailing negation cues and suppresses the match (done 2026-08-14). |
 | 7d | `facial` pattern in `body_fluids`/`orgasm_ejaculation` | **Removed** | "facial features" / "facial expression" in non-sexual contexts triggered false positives. Unambiguous patterns (`cum on face`, `cumshot`, `creampie`) remain (done 2026-08-14). |
 | 12b | VLM caption: only `message.content` read | **Thinking channel captured separately** | Thinking-variant models with `think=False` put output in `message.thinking`, returning empty `content`. `_chat_once()` now reads both; `caption_frame()` falls back to thinking when content is empty; `thinking` stored as separate sidecar field (done 2026-08-14). |
 | — | Prompt ranking: raw `distinct_tags_count` | **Composite score** (`distinct_tags × tagged% / 100`) | Raw tag count ranked `10_negative_space` #1 despite all tags being negation false positives. Composite score rewards both tag richness and reliability; score column added to Rich + Markdown reports (done 2026-08-14). |
+| 12c | Default prompt: generic "Describe what is happening..." | **05_structured_fields** (People/Clothing/Acts/Positions/Objects/Setting) | 10-prompt sweep re-run (2026-08-14) showed 05 is the only prompt that consistently produces direct content from the Thinking-variant model. Other prompts fall back to the thinking channel, which produces speculative reasoning that over-tags by mentioning tag names while reasoning through whether they apply. 05 is ~2x faster (114s vs 217s+) and more accurate (3 honest tags vs 14 speculative). |
 
 ### Environment details (ROCm server)
 
@@ -95,7 +111,7 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 - **Python:** 3.12.13 in `.venv/`
 - **PyTorch:** 2.9.1+rocm6.4 (from `https://download.pytorch.org/whl/rocm6.4`)
 - **Ollama:** 0.32.5 (Docker container `ollama-rocm`, bind-mount `~/.ollama`)
-- **VLM models available:** `qwen3-vl:4b` (3.3 GB, 100% GPU), `hf.co/lihaoyun6/Qwen3-VL-2B-Instruct-abliterated_GGUF:Q5_K_M` (2.1 GB, 81% GPU), `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (3.0 GB)
+- **VLM models available:** `hf.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-abliterated-GGUF:Q4_K_M` (2.5 GB, default, Instruct/non-Thinking), `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (3.0 GB, Thinking variant, previous default), `qwen3-vl:4b` (3.3 GB, 100% GPU), `hf.co/lihaoyun6/Qwen3-VL-2B-Instruct-abliterated_GGUF:Q5_K_M` (2.1 GB, 81% GPU)
 - **Full validation report:** `docs/rocm-validation.md`
 
 ---
@@ -109,13 +125,13 @@ All 8 checklist items done. 9/9 tests pass. Committed and pushed to GitHub (`a72
 | 3 | Output | **JSON sidecar per video + SQLite index** |
 | 4 | SQLite location | `./video_nsfw_index.db` in cwd / next to first input; `--db PATH` override |
 | 5 | VLM invocation | **NSFW-gated only** — VLM runs solely on frames above the NSFW threshold (plus optional top-K cap) |
-| 6 | VLM model | **Pluggable: default `hf.co/mradermacher/Huihui-Qwen3-VL-4B-Thinking-abliterated-GGUF:Q4_K_M` (abliterated Qwen3-VL 4B) via Ollama HTTP API** (was `qwen3-vl:4b`, and before that `Qwen/Qwen2.5-VL-3B-Instruct` via transformers — see scope changes), override via `--vlm-model` |
+| 6 | VLM model | **Pluggable: default `hf.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-abliterated-GGUF:Q4_K_M` (Instruct, non-Thinking, both Uncensored + abliterated) via Ollama HTTP API** (was Thinking-abliterated, before that `qwen3-vl:4b`, and before that `Qwen/Qwen2.5-VL-3B-Instruct` via transformers — see scope changes), override via `--vlm-model` |
 | 7 | Act-tag derivation | **Keyword/phrase lexicon parse** of captions (deterministic, editable, no extra model); matching is case-insensitive with word boundaries (not raw substring) |
 | 8 | Interface | **CLI only** for v1 (Gradio deferred) |
 | 9 | Packaging | **setuptools** (`pyproject.toml`, src layout, console script entrypoint); `[tool.pdm]` retained for scripts only (was PDM — changed during Phase A) |
 | 10 | Phasing | **Phase A: ViT MVP → Phase B: VLM stage** (validate ROCm before loading the 3B VLM) |
 | 11 | VLM backend module | **`ollama.py`** (Ollama HTTP API) is the first concrete backend; `vlm.py` stays as a placeholder for a future transformers backend. CLI calls `ollama.py` directly when `--vlm` is set. |
-| 12 | VLM prompt | **Targeted description** — e.g. "Describe what is happening in this image: the people, their actions, state of dress, and the setting." Produces richer captions that match more lexicon patterns. Stored as a module constant, easy to tune. |
+| 12 | VLM prompt | **Structured fields** — "Describe this image using these exact fields, one per line: People/Clothing/Acts/Positions/Objects/Setting." Selected as default after a 10-prompt sweep (2026-08-14) showed it consistently produces accurate, direct content from the Thinking-variant model without falling back to the speculative reasoning channel. ~2x faster than thinking-fallback prompts. Stored as `ollama.py.DEFAULT_PROMPT`, easy to tune. (Was: generic "Describe what is happening..." — changed 2026-08-14.) |
 | 13 | Ollama unavailable | **Fail fast** — when `--vlm` is passed but Ollama is unreachable or the model isn't pulled, exit 1 with a clear message before scanning starts. No sidecar written. |
 | 14 | VRAM management | **Configurable: `--unload-vit-before-vlm` flag** (default off). Off = keep both loaded (~4.1 GB peak, faster for batch). On = `del pipe` + `torch.cuda.empty_cache()` before VLM calls, reload ViT for next video (~3.5 GB peak, safer when other GPU services are running). |
 | 15 | Ollama `keep_alive` | **`keep_alive="10m"` during scans, explicit unload at scan end.** Prevents Ollama's default 5-min unload from forcing a mid-scan model reload (4s load penalty per caption), and frees VRAM for other services when the scan finishes. |
